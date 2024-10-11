@@ -94,7 +94,7 @@ class Trainer:
         if self.step > self.step_start_ema and self.step % self.update_ema_every == 0:
             self.ema.update_model_average(self.ema_model, self.actor)
 
-    def train_iteration(self, num_steps, logger, iter_num=0, log_writer=None):
+    def train_iteration(self, num_steps, logger=None, iter_num=0, log_writer=None):
 
         logs = dict()
 
@@ -116,14 +116,21 @@ class Trainer:
             self.actor_lr_scheduler.step()
             self.critic_lr_scheduler.step()
 
-        logger.record_tabular('BC Loss', np.mean(loss_metric['bc_loss']))
-        logger.record_tabular('QL Loss', np.mean(loss_metric['ql_loss']))
-        logger.record_tabular('Actor Loss', np.mean(loss_metric['actor_loss']))
-        logger.record_tabular('Critic Loss', np.mean(loss_metric['critic_loss']))
-        logger.record_tabular('Target Q Mean', np.mean(loss_metric['target_q_mean']))
-        logger.dump_tabular()
+        # logger.record_tabular('BC Loss', np.mean(loss_metric['bc_loss']))
+        # logger.record_tabular('QL Loss', np.mean(loss_metric['ql_loss']))
+        # logger.record_tabular('Actor Loss', np.mean(loss_metric['actor_loss']))
+        # logger.record_tabular('Critic Loss', np.mean(loss_metric['critic_loss']))
+        # logger.record_tabular('Target Q Mean', np.mean(loss_metric['target_q_mean']))
+        # logger.dump_tabular()
 
         logs['time/training'] = time.time() - train_start
+        logs['training/BC_Loss'] = np.mean(loss_metric['bc_loss'])
+        logs['training/QL_Loss'] = np.mean(loss_metric['ql_loss'])
+        logs['training/Actor_Loss'] = np.mean(loss_metric['actor_loss'])
+        logs['training/Critic_Loss'] = np.mean(loss_metric['critic_loss'])
+        logs['training/Target_Q_Mean'] = np.mean(loss_metric['target_q_mean'])
+        logs['training/Actor_LR'] = self.actor_optimizer.param_groups[0]['lr']
+        logs['training/Critic_LR'] = self.critic_optimizer.param_groups[0]['lr']
 
         eval_start = time.time()
 
@@ -133,28 +140,30 @@ class Trainer:
         for eval_fn in self.eval_fns:
             outputs = eval_fn(self.actor, self.critic_target)
             for k, v in outputs.items():
-                logs[f'evaluation/{k}'] = v
+                logs[f'eval/{k}'] = v
 
+        logs['time/eval'] = time.time() - eval_start
         logs['time/total'] = time.time() - self.start_time
-        logs['time/evaluation'] = time.time() - eval_start
 
         for k in self.diagnostics:
             logs[k] = self.diagnostics[k]
 
-        logger.log('=' * 80)
-        logger.log(f'Iteration {iter_num}')
-        best_ret = -10000
-        best_nor_ret = -10000
-        for k, v in logs.items():
-            if 'return_mean' in k:
-                best_ret = max(best_ret, float(v))
-            if 'normalized_score' in k:
-                best_nor_ret = max(best_nor_ret, float(v))
-            logger.record_tabular(k, float(v))
-        logger.record_tabular('Current actor learning rate', self.actor_optimizer.param_groups[0]['lr'])
-        logger.record_tabular('Current critic learning rate', self.critic_optimizer.param_groups[0]['lr'])
-        logger.dump_tabular()
+        # logger.log('=' * 80)
+        # logger.log(f'Iteration {iter_num}')
+        # best_ret = -10000
+        # best_nor_ret = -10000
+        # for k, v in logs.items():
+        #     if 'return_mean' in k:
+        #         best_ret = max(best_ret, float(v))
+        #     if 'normalized_score' in k:
+        #         best_nor_ret = max(best_nor_ret, float(v))
+        #     logger.record_tabular(k, float(v))
+        # logger.record_tabular('Current actor learning rate', self.actor_optimizer.param_groups[0]['lr'])
+        # logger.record_tabular('Current critic learning rate', self.critic_optimizer.param_groups[0]['lr'])
+        # logger.dump_tabular()
 
+        best_ret = max(-10000, outputs['reward_mean'])
+        best_nor_ret = max(-10000, outputs['normalized_score_mean'])
         logs['Best_return_mean'] = best_ret
         logs['Best_normalized_score'] = best_nor_ret
         return logs
@@ -316,3 +325,21 @@ class Trainer:
         loss_metric['target_q_mean'].append(target_q.mean().item())
 
         return loss_metric
+
+    def eval_episode(self):
+        logs = dict()
+
+        eval_start = time.time()
+
+        self.actor.eval()
+        self.critic.eval()
+        for eval_fn in self.eval_fns:
+            outputs = eval_fn(self.actor, self.critic_target)
+            for k, v in outputs.items():
+                logs[f'eval/{k}'] = v
+
+        logs['time/eval'] = time.time() - eval_start
+        logs['time/total'] = time.time() - self.start_time
+        logs['Best_return_mean'] = outputs['reward_mean']
+        logs['Best_normalized_score'] = outputs['normalized_score_mean']
+        return logs

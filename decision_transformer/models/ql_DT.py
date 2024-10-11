@@ -1,4 +1,3 @@
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -12,19 +11,19 @@ class Critic(nn.Module):
     def __init__(self, state_dim, action_dim, hidden_dim=256):
         super(Critic, self).__init__()
         self.q1_model = nn.Sequential(nn.Linear(state_dim + action_dim, hidden_dim),
-                                      nn.Mish(),
+                                      nn.ReLU(),
                                       nn.Linear(hidden_dim, hidden_dim),
-                                      nn.Mish(),
+                                      nn.ReLU(),
                                       nn.Linear(hidden_dim, hidden_dim),
-                                      nn.Mish(),
+                                      nn.ReLU(),
                                       nn.Linear(hidden_dim, 1))
 
         self.q2_model = nn.Sequential(nn.Linear(state_dim + action_dim, hidden_dim),
-                                      nn.Mish(),
+                                      nn.ReLU(),
                                       nn.Linear(hidden_dim, hidden_dim),
-                                      nn.Mish(),
+                                      nn.ReLU(),
                                       nn.Linear(hidden_dim, hidden_dim),
-                                      nn.Mish(),
+                                      nn.ReLU(),
                                       nn.Linear(hidden_dim, 1))
 
     def forward(self, state, action):
@@ -157,15 +156,16 @@ class DecisionTransformer(TrajectoryModel):
 
     def get_action(self, critic, states, actions, rewards=None, returns_to_go=None, timesteps=None, **kwargs):
         # we don't care about the past rewards in this model
-
-        states = states.reshape(1, -1, self.state_dim).repeat_interleave(repeats=50, dim=0)
-        actions = actions.reshape(1, -1, self.act_dim).repeat_interleave(repeats=50, dim=0)
-        rewards = rewards.reshape(1, -1, 1).repeat_interleave(repeats=50, dim=0)
-        timesteps = timesteps.reshape(1, -1).repeat_interleave(repeats=50, dim=0)
-
         bs = returns_to_go.shape[0]
-        returns_to_go = returns_to_go.reshape(bs, -1, 1).repeat_interleave(repeats=50 // bs, dim=0)
-        returns_to_go = torch.cat([returns_to_go, torch.randn((50-returns_to_go.shape[0], returns_to_go.shape[1], 1), device=returns_to_go.device)], dim=0)
+        repeats = bs if self.infer_no_q else 50
+
+        states = states.reshape(1, -1, self.state_dim).repeat_interleave(repeats=repeats, dim=0)
+        actions = actions.reshape(1, -1, self.act_dim).repeat_interleave(repeats=repeats, dim=0)
+        rewards = rewards.reshape(1, -1, 1).repeat_interleave(repeats=repeats, dim=0)
+        timesteps = timesteps.reshape(1, -1).repeat_interleave(repeats=repeats, dim=0)
+
+        returns_to_go = returns_to_go.reshape(bs, -1, 1).repeat_interleave(repeats=repeats // bs, dim=0)
+        returns_to_go = torch.cat([returns_to_go, torch.randn((repeats-returns_to_go.shape[0], returns_to_go.shape[1], 1), device=returns_to_go.device)], dim=0)
             
 
         if self.max_length is not None:
@@ -177,7 +177,7 @@ class DecisionTransformer(TrajectoryModel):
 
             # padding
             attention_mask = torch.cat([torch.zeros(self.max_length-states.shape[1]), torch.ones(states.shape[1])])
-            attention_mask = attention_mask.to(dtype=torch.long, device=states.device).reshape(1, -1).repeat_interleave(repeats=50, dim=0)
+            attention_mask = attention_mask.to(dtype=torch.long, device=states.device).reshape(1, -1).repeat_interleave(repeats=repeats, dim=0)
             states = torch.cat(
                 [torch.zeros((states.shape[0], self.max_length-states.shape[1], self.state_dim), device=states.device), states],
                 dim=1).to(dtype=torch.float32)
@@ -208,10 +208,9 @@ class DecisionTransformer(TrajectoryModel):
         state_rpt = states[:, -1, :]
         action_preds = action_preds[:, -1, :]
 
-        q_value = critic.q_min(state_rpt, action_preds).flatten()
-        idx = torch.multinomial(F.softmax(q_value, dim=-1), 1)
-
         if not self.infer_no_q:
+            q_value = critic.q_min(state_rpt, action_preds).flatten()
+            idx = torch.multinomial(F.softmax(q_value, dim=-1), 1)
             return action_preds[idx]
         else:
             return action_preds[0]

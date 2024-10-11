@@ -1,493 +1,816 @@
-"""
-Based on rllab's logger.
-
-https://github.com/rll/rllab
-"""
-from enum import Enum
-from contextlib import contextmanager
-import numpy as np
-import os
-import os.path as osp
-import sys
-import datetime
-import dateutil.tz
-import csv
+import time
 import json
-import pickle
-import errno
-from collections import OrderedDict
-from numbers import Number
 import os
+import sys
+import uuid
+import tempfile
+import warnings
+import shutil
+from collections import defaultdict
+from typing import Any, Dict, List, Optional, Sequence, TextIO, Tuple, Union
 
-from tabulate import tabulate
-import dateutil.tz
-import os.path as osp
+import numpy as np
+import pandas
+import torch as th
+from matplotlib import pyplot as plt
 
-def dict_to_safe_json(d):
+try:
+    from torch.utils.tensorboard import SummaryWriter
+    from torch.utils.tensorboard.summary import hparams
+except ImportError:
+    SummaryWriter = None
+
+try:
+    from tqdm import tqdm
+except ImportError:
+    tqdm = None
+
+DEBUG = 10
+INFO = 20
+WARN = 30
+ERROR = 40
+DISABLED = 50
+
+
+class Video:
     """
-    Convert each value in the dictionary into a JSON'able primitive.
-    :param d:
-    :return:
+    Video data class storing the video frames and the frame per seconds
+    :param frames: frames to create the video from
+    :param fps: frames per second
     """
-    new_d = {}
-    for key, item in d.items():
-        if safe_json(item):
-            new_d[key] = item
-        else:
-            if isinstance(item, dict):
-                new_d[key] = dict_to_safe_json(item)
-            else:
-                new_d[key] = str(item)
-    return new_d
+
+    def __init__(self, frames: th.Tensor, fps: Union[float, int]):
+        self.frames = frames
+        self.fps = fps
 
 
-def safe_json(data):
-    if data is None:
-        return True
-    elif isinstance(data, (bool, int, float)):
-        return True
-    elif isinstance(data, (tuple, list)):
-        return all(safe_json(x) for x in data)
-    elif isinstance(data, dict):
-        return all(isinstance(k, str) and safe_json(v) for k, v in data.items())
-    return False
-
-def create_exp_name(exp_prefix, exp_id=0, seed=0):
+class Figure:
     """
-    Create a semi-unique experiment name that has a timestamp
-    :param exp_prefix:
-    :param exp_id:
-    :return:
+    Figure data class storing a matplotlib figure and whether to close the figure after logging it
+    :param figure: figure to log
+    :param close: if true, close the figure after logging it
     """
-    now = datetime.datetime.now(dateutil.tz.tzlocal())
-    timestamp = now.strftime('%Y_%m_%d_%H_%M_%S')
-    return "%s_%s_%04d--s-%d" % (exp_prefix, timestamp, exp_id, seed)
 
-def create_log_dir(
-        exp_prefix,
-        exp_id=0,
-        seed=0,
-        base_log_dir=None,
-        include_exp_prefix_sub_dir=True,
-):
+    def __init__(self, figure: plt.figure, close: bool):
+        self.figure = figure
+        self.close = close
+
+
+class Image:
     """
-    Creates and returns a unique log directory.
-    :param exp_prefix: All experiments with this prefix will have log
-    directories be under this directory.
-    :param exp_id: The number of the specific experiment run within this
-    experiment.
-    :param base_log_dir: The directory where all log should be saved.
-    :return:
+    Image data class storing an image and data format
+    :param image: image to log
+    :param dataformats: Image data format specification of the form NCHW, NHWC, CHW, HWC, HW, WH, etc.
+        More info in add_image method doc at https://pytorch.org/docs/stable/tensorboard.html
+        Gym envs normally use 'HWC' (channel last)
     """
-    exp_name = create_exp_name(exp_prefix, exp_id=exp_id,
-                               seed=seed)
-    if base_log_dir is None:
-        base_log_dir = './data'
-    if include_exp_prefix_sub_dir:
-        log_dir = osp.join(base_log_dir, exp_prefix.replace("_", "-"), exp_name)
-    else:
-        log_dir = osp.join(base_log_dir, exp_name)
-    if osp.exists(log_dir):
-        print("WARNING: Log directory already exists {}".format(log_dir), flush=True)
-    os.makedirs(log_dir, exist_ok=True)
-    return log_dir
+
+    def __init__(self, image: Union[th.Tensor, np.ndarray, str], dataformats: str):
+        self.image = image
+        self.dataformats = dataformats
 
 
-def setup_logger(
-        exp_prefix="default",
-        variant=None,
-        text_log_file="logger.log",
-        variant_log_file="variant.json",
-        tabular_log_file="progress.csv",
-        snapshot_mode="last",
-        snapshot_gap=1,
-        log_tabular_only=False,
-        log_dir=None,
-        git_infos=None,
-        script_name=None,
-        **create_log_dir_kwargs
-):
+class HParam:
     """
-    Set up logger to have some reasonable default settings.
-    Will save log output to
-        based_log_dir/exp_prefix/exp_name.
-    exp_name will be auto-generated to be unique.
-    If log_dir is specified, then that directory is used as the output dir.
-    :param exp_prefix: The sub-directory for this specific experiment.
-    :param variant:
-    :param text_log_file:
-    :param variant_log_file:
-    :param tabular_log_file:
-    :param snapshot_mode:
-    :param log_tabular_only:
-    :param snapshot_gap:
-    :param log_dir:
-    :param git_infos:
-    :param script_name: If set, save the script name to this.
-    :return:
+    Hyperparameter data class storing hyperparameters and metrics in dictionnaries
+    :param hparam_dict: key-value pairs of hyperparameters to log
+    :param metric_dict: key-value pairs of metrics to log
+        A non-empty metrics dict is required to display hyperparameters in the corresponding Tensorboard section.
     """
-    first_time = log_dir is None
-    if first_time:
-        log_dir = create_log_dir(exp_prefix, **create_log_dir_kwargs)
 
-    if variant is not None:
-        logger.log("Variant:")
-        logger.log(json.dumps(dict_to_safe_json(variant), indent=2))
-        variant_log_path = osp.join(log_dir, variant_log_file)
-        logger.log_variant(variant_log_path, variant)
-
-    tabular_log_path = osp.join(log_dir, tabular_log_file)
-    text_log_path = osp.join(log_dir, text_log_file)
-
-    logger.add_text_output(text_log_path)
-    if first_time:
-        logger.add_tabular_output(tabular_log_path)
-    else:
-        logger._add_output(tabular_log_path, logger._tabular_outputs,
-                           logger._tabular_fds, mode='a')
-        for tabular_fd in logger._tabular_fds:
-            logger._tabular_header_written.add(tabular_fd)
-    logger.set_snapshot_dir(log_dir)
-    logger.set_snapshot_mode(snapshot_mode)
-    logger.set_snapshot_gap(snapshot_gap)
-    logger.set_log_tabular_only(log_tabular_only)
-    exp_name = log_dir.split("/")[-1]
-    logger.push_prefix("[%s] " % exp_name)
-
-    if script_name is not None:
-        with open(osp.join(log_dir, "script_name.txt"), "w") as f:
-            f.write(script_name)
-    return log_dir
-
-
-def create_stats_ordered_dict(
-        name,
-        data,
-        stat_prefix=None,
-        always_show_all_stats=True,
-        exclude_max_min=False,
-):
-    if stat_prefix is not None:
-        name = "{}{}".format(stat_prefix, name)
-    if isinstance(data, Number):
-        return OrderedDict({name: data})
-
-    if len(data) == 0:
-        return OrderedDict()
-
-    if isinstance(data, tuple):
-        ordered_dict = OrderedDict()
-        for number, d in enumerate(data):
-            sub_dict = create_stats_ordered_dict(
-                "{0}_{1}".format(name, number),
-                d,
+    def __init__(
+        self,
+        hparam_dict: Dict[str, Union[bool, str, float, int, None]],
+        metric_dict: Dict[str, Union[float, int]],
+    ):
+        self.hparam_dict = hparam_dict
+        if not metric_dict:
+            raise Exception(
+                "`metric_dict` must not be empty to display hyperparameters to the HPARAMS tensorboard tab."
             )
-            ordered_dict.update(sub_dict)
-        return ordered_dict
+        self.metric_dict = metric_dict
 
-    if isinstance(data, list):
-        try:
-            iter(data[0])
-        except TypeError:
-            pass
+
+class FormatUnsupportedError(NotImplementedError):
+    """
+    Custom error to display informative message when
+    a value is not supported by some formats.
+    :param unsupported_formats: A sequence of unsupported formats,
+        for instance ``["stdout"]``.
+    :param value_description: Description of the value that cannot be logged by this format.
+    """
+
+    def __init__(self, unsupported_formats: Sequence[str], value_description: str):
+        if len(unsupported_formats) > 1:
+            format_str = f"formats {', '.join(unsupported_formats)} are"
         else:
-            data = np.concatenate(data)
-
-    if (isinstance(data, np.ndarray) and data.size == 1
-            and not always_show_all_stats):
-        return OrderedDict({name: float(data)})
-
-    stats = OrderedDict([
-        (name + ' Mean', np.mean(data)),
-        (name + ' Std', np.std(data)),
-    ])
-    if not exclude_max_min:
-        stats[name + ' Max'] = np.max(data)
-        stats[name + ' Min'] = np.min(data)
-    return stats
+            format_str = f"format {unsupported_formats[0]} is"
+        super().__init__(
+            f"The {format_str} not supported for the {value_description} value logged.\n"
+            f"You can exclude formats via the `exclude` parameter of the logger's `record` function."
+        )
 
 
-class TerminalTablePrinter(object):
-    def __init__(self):
-        self.headers = None
-        self.tabulars = []
+class KVWriter:
+    """
+    Key Value writer
+    """
 
-    def print_tabular(self, new_tabular):
-        if self.headers is None:
-            self.headers = [x[0] for x in new_tabular]
-        else:
-            assert len(self.headers) == len(new_tabular)
-        self.tabulars.append([x[1] for x in new_tabular])
-        self.refresh()
-
-    def refresh(self):
-        import os
-        rows, columns = os.popen('stty size', 'r').read().split()
-        tabulars = self.tabulars[-(int(rows) - 3):]
-        sys.stdout.write("\x1b[2J\x1b[H")
-        sys.stdout.write(tabulate(tabulars, self.headers))
-        sys.stdout.write("\n")
-
-
-class MyEncoder(json.JSONEncoder):
-    def default(self, o):
-        if isinstance(o, type):
-            return {'$class': o.__module__ + "." + o.__name__}
-        elif isinstance(o, Enum):
-            return {
-                '$enum': o.__module__ + "." + o.__class__.__name__ + '.' + o.name
-            }
-        elif callable(o):
-            return {
-                '$function': o.__module__ + "." + o.__name__
-            }
-        return json.JSONEncoder.default(self, o)
-
-
-def mkdir_p(path):
-    try:
-        os.makedirs(path)
-    except OSError as exc:  # Python >2.5
-        if exc.errno == errno.EEXIST and os.path.isdir(path):
-            pass
-        else:
-            raise
-
-
-class Logger(object):
-    def __init__(self):
-        self._prefixes = []
-        self._prefix_str = ''
-
-        self._tabular_prefixes = []
-        self._tabular_prefix_str = ''
-
-        self._tabular = []
-
-        self._text_outputs = []
-        self._tabular_outputs = []
-
-        self._text_fds = {}
-        self._tabular_fds = {}
-        self._tabular_header_written = set()
-
-        self._snapshot_dir = None
-        self._snapshot_mode = 'all'
-        self._snapshot_gap = 1
-
-        self._log_tabular_only = False
-        self._header_printed = False
-        self.table_printer = TerminalTablePrinter()
-
-    def reset(self):
-        self.__init__()
-
-    def _add_output(self, file_name, arr, fds, mode='a'):
-        if file_name not in arr:
-            mkdir_p(os.path.dirname(file_name))
-            arr.append(file_name)
-            fds[file_name] = open(file_name, mode)
-
-    def _remove_output(self, file_name, arr, fds):
-        if file_name in arr:
-            fds[file_name].close()
-            del fds[file_name]
-            arr.remove(file_name)
-
-    def push_prefix(self, prefix):
-        self._prefixes.append(prefix)
-        self._prefix_str = ''.join(self._prefixes)
-
-    def add_text_output(self, file_name):
-        self._add_output(file_name, self._text_outputs, self._text_fds,
-                         mode='a')
-
-    def remove_text_output(self, file_name):
-        self._remove_output(file_name, self._text_outputs, self._text_fds)
-
-    def add_tabular_output(self, file_name, relative_to_snapshot_dir=False):
-        if relative_to_snapshot_dir:
-            file_name = osp.join(self._snapshot_dir, file_name)
-        self._add_output(file_name, self._tabular_outputs, self._tabular_fds,
-                         mode='w')
-
-    def remove_tabular_output(self, file_name, relative_to_snapshot_dir=False):
-        if relative_to_snapshot_dir:
-            file_name = osp.join(self._snapshot_dir, file_name)
-        if self._tabular_fds[file_name] in self._tabular_header_written:
-            self._tabular_header_written.remove(self._tabular_fds[file_name])
-        self._remove_output(file_name, self._tabular_outputs, self._tabular_fds)
-
-    def set_snapshot_dir(self, dir_name):
-        self._snapshot_dir = dir_name
-
-    def get_snapshot_dir(self, ):
-        return self._snapshot_dir
-
-    def get_snapshot_mode(self, ):
-        return self._snapshot_mode
-
-    def set_snapshot_mode(self, mode):
-        self._snapshot_mode = mode
-
-    def get_snapshot_gap(self, ):
-        return self._snapshot_gap
-
-    def set_snapshot_gap(self, gap):
-        self._snapshot_gap = gap
-
-    def set_log_tabular_only(self, log_tabular_only):
-        self._log_tabular_only = log_tabular_only
-
-    def get_log_tabular_only(self, ):
-        return self._log_tabular_only
-
-    def log(self, s, with_prefix=True, with_timestamp=True):
-        out = s
-        if with_prefix:
-            out = self._prefix_str + out
-        if with_timestamp:
-            now = datetime.datetime.now(dateutil.tz.tzlocal())
-            timestamp = now.strftime('%y-%m-%d.%H:%M') # :%S
-            out = "%s|%s" % (timestamp, out)
-        if not self._log_tabular_only:
-            # Also log to stdout
-            print(out, flush=True)
-            for fd in list(self._text_fds.values()):
-                fd.write(out + '\n')
-                fd.flush()
-            sys.stdout.flush()
-
-    def record_tabular(self, key, val):
-        self._tabular.append((self._tabular_prefix_str + str(key), str(val)))
-
-    def record_dict(self, d, prefix=None):
-        if prefix is not None:
-            self.push_tabular_prefix(prefix)
-        for k, v in d.items():
-            self.record_tabular(k, v)
-        if prefix is not None:
-            self.pop_tabular_prefix()
-
-    def push_tabular_prefix(self, key):
-        self._tabular_prefixes.append(key)
-        self._tabular_prefix_str = ''.join(self._tabular_prefixes)
-
-    def pop_tabular_prefix(self, ):
-        del self._tabular_prefixes[-1]
-        self._tabular_prefix_str = ''.join(self._tabular_prefixes)
-
-    def save_extra_data(self, data, file_name='extra_data.pkl', mode='joblib'):
+    def write(
+        self,
+        key_values: Dict[str, Any],
+        key_excluded: Dict[str, Union[str, Tuple[str, ...]]],
+        step: int = 0,
+    ) -> None:
         """
-        Data saved here will always override the last entry
-
-        :param data: Something pickle'able.
+        Write a dictionary to file
+        :param key_values:
+        :param key_excluded:
+        :param step:
         """
-        file_name = osp.join(self._snapshot_dir, file_name)
-        if mode == 'joblib':
-            import joblib
-            joblib.dump(data, file_name, compress=3)
-        elif mode == 'pickle':
-            pickle.dump(data, open(file_name, "wb"))
+        raise NotImplementedError
+
+    def close(self) -> None:
+        """
+        Close owned resources
+        """
+        raise NotImplementedError
+
+
+class SeqWriter:
+    """
+    sequence writer
+    """
+
+    def write_sequence(self, sequence: List) -> None:
+        """
+        write_sequence an array to file
+        :param sequence:
+        """
+        raise NotImplementedError
+
+
+class HumanOutputFormat(KVWriter, SeqWriter):
+    """A human-readable output format producing ASCII tables of key-value pairs.
+    Set attribute ``max_length`` to change the maximum length of keys and values
+    to write to output (or specify it when calling ``__init__``).
+    :param filename_or_file: the file to write the log to
+    :param max_length: the maximum length of keys and values to write to output.
+        Outputs longer than this will be truncated. An error will be raised
+        if multiple keys are truncated to the same value. The maximum output
+        width will be ``2*max_length + 7``. The default of 36 produces output
+        no longer than 79 characters wide.
+    """
+
+    def __init__(self, filename_or_file: Union[str, TextIO], max_length: int = 72):
+        self.max_length = max_length
+        if isinstance(filename_or_file, str):
+            self.file = open(filename_or_file, "wt")
+            self.own_file = True
         else:
-            raise ValueError("Invalid mode: {}".format(mode))
-        return file_name
+            assert hasattr(
+                filename_or_file, "write"
+            ), f"Expected file or str, got {filename_or_file}"
+            self.file = filename_or_file
+            self.own_file = False
 
-    def get_table_dict(self, ):
-        return dict(self._tabular)
+    def write(self, key_values: Dict, key_excluded: Dict, step: int = 0) -> None:
+        # Create strings for printing
+        key2str = {}
+        tag = None
+        for (key, value), (_, excluded) in zip(
+            sorted(key_values.items()), sorted(key_excluded.items())
+        ):
+            if excluded is not None and ("stdout" in excluded or "log" in excluded):
+                continue
 
-    def get_table_key_set(self, ):
-        return set(key for key, value in self._tabular)
+            elif isinstance(value, Video):
+                raise FormatUnsupportedError(["stdout", "log"], "video")
 
-    @contextmanager
-    def prefix(self, key):
-        self.push_prefix(key)
-        try:
-            yield
-        finally:
-            self.pop_prefix()
+            elif isinstance(value, Figure):
+                raise FormatUnsupportedError(["stdout", "log"], "figure")
 
-    @contextmanager
-    def tabular_prefix(self, key):
-        self.push_tabular_prefix(key)
-        yield
-        self.pop_tabular_prefix()
+            elif isinstance(value, Image):
+                raise FormatUnsupportedError(["stdout", "log"], "image")
 
-    def log_variant(self, log_file, variant_data):
-        mkdir_p(os.path.dirname(log_file))
-        with open(log_file, "w") as f:
-            json.dump(variant_data, f, indent=2, sort_keys=True, cls=MyEncoder)
+            elif isinstance(value, HParam):
+                raise FormatUnsupportedError(["stdout", "log"], "hparam")
 
-    def record_tabular_misc_stat(self, key, values, placement='back'):
-        if placement == 'front':
-            prefix = ""
-            suffix = key
-        else:
-            prefix = key
-            suffix = ""
-        if len(values) > 0:
-            self.record_tabular(prefix + "Average" + suffix, np.average(values))
-            self.record_tabular(prefix + "Std" + suffix, np.std(values))
-            self.record_tabular(prefix + "Median" + suffix, np.median(values))
-            self.record_tabular(prefix + "Min" + suffix, np.min(values))
-            self.record_tabular(prefix + "Max" + suffix, np.max(values))
-        else:
-            self.record_tabular(prefix + "Average" + suffix, np.nan)
-            self.record_tabular(prefix + "Std" + suffix, np.nan)
-            self.record_tabular(prefix + "Median" + suffix, np.nan)
-            self.record_tabular(prefix + "Min" + suffix, np.nan)
-            self.record_tabular(prefix + "Max" + suffix, np.nan)
-
-    def dump_tabular(self, *args, **kwargs):
-        wh = kwargs.pop("write_header", None)
-        if len(self._tabular) > 0:
-            if self._log_tabular_only:
-                self.table_printer.print_tabular(self._tabular)
+            elif isinstance(value, float):
+                # Align left
+                value_str = f"{value:<8.6g}"
             else:
-                for line in tabulate(self._tabular).split('\n'):
-                    self.log(line, *args, **kwargs)
-            tabular_dict = dict(self._tabular)
-            # Also write to the csv files
-            # This assumes that the keys in each iteration won't change!
-            for tabular_fd in list(self._tabular_fds.values()):
-                writer = csv.DictWriter(tabular_fd,
-                                        fieldnames=list(tabular_dict.keys()))
-                if wh or (
-                        wh is None and tabular_fd not in self._tabular_header_written):
-                    writer.writeheader()
-                    self._tabular_header_written.add(tabular_fd)
-                writer.writerow(tabular_dict)
-                tabular_fd.flush()
-            del self._tabular[:]
+                value_str = str(value)
 
-    def pop_prefix(self, ):
-        del self._prefixes[-1]
-        self._prefix_str = ''.join(self._prefixes)
+            if key.find("/") > 0:  # Find tag and add it to the dict
+                tag = key[: key.find("/") + 1]
+                key2str[(tag, self._truncate(tag))] = ""
+            # Remove tag from key
+            if tag is not None and tag in key:
+                key = str("   " + key[len(tag) :])
 
-    def save_itr_params(self, itr, params):
-        if self._snapshot_dir:
-            if self._snapshot_mode == 'all':
-                file_name = osp.join(self._snapshot_dir, 'itr_%d.pkl' % itr)
-                pickle.dump(params, open(file_name, "wb"))
-            elif self._snapshot_mode == 'last':
-                # override previous params
-                file_name = osp.join(self._snapshot_dir, 'params.pkl')
-                pickle.dump(params, open(file_name, "wb"))
-            elif self._snapshot_mode == "gap":
-                if itr % self._snapshot_gap == 0:
-                    file_name = osp.join(self._snapshot_dir, 'itr_%d.pkl' % itr)
-                    pickle.dump(params, open(file_name, "wb"))
-            elif self._snapshot_mode == "gap_and_last":
-                if itr % self._snapshot_gap == 0:
-                    file_name = osp.join(self._snapshot_dir, 'itr_%d.pkl' % itr)
-                    pickle.dump(params, open(file_name, "wb"))
-                file_name = osp.join(self._snapshot_dir, 'params.pkl')
-                pickle.dump(params, open(file_name, "wb"))
-            elif self._snapshot_mode == 'none':
-                pass
-            else:
-                raise NotImplementedError
+            truncated_key = self._truncate(key)
+            if (tag, truncated_key) in key2str:
+                raise ValueError(
+                    f"Key '{key}' truncated to '{truncated_key}' that already exists. Consider increasing `max_length`."
+                )
+            key2str[(tag, truncated_key)] = self._truncate(value_str)
+
+        # Find max widths
+        if len(key2str) == 0:
+            warnings.warn("Tried to write empty key-value dict")
+            return
+        else:
+            tagless_keys = map(lambda x: x[1], key2str.keys())
+            key_width = max(map(len, tagless_keys))
+            val_width = max(map(len, key2str.values()))
+
+        # Write out the data
+
+        # --- SB3 table output ---
+        dashes = "-" * (key_width + val_width + 7)
+        lines = [dashes]
+        for (_, key), value in key2str.items():
+            key_space = " " * (key_width - len(key))
+            val_space = " " * (val_width - len(value))
+            lines.append(f"| {key}{key_space} | {value}{val_space} |")
+        lines.append(dashes)
+
+        if (
+            tqdm is not None
+            and hasattr(self.file, "name")
+            and self.file.name == "<stdout>"
+        ):
+            # Do not mess up with progress bar
+            tqdm.write("\n".join(lines) + "\n", file=sys.stdout, end="")
+        else:
+            self.file.write("\n".join(lines) + "\n")
+
+        # --- New line output ---
+        # line = []
+        # for key in key_values.keys():
+        #     line.append(f"{key}: {key_values[key]}")
+        # lines = [" | ".join(line)]
+        # self.file.write("\n".join(lines) + "\n")
+
+        # Flush the output to the file
+        self.file.flush()
+
+    def _truncate(self, string: str) -> str:
+        if len(string) > self.max_length:
+            string = string[: self.max_length - 3] + "..."
+        return string
+
+    def write_sequence(self, sequence: List) -> None:
+        sequence = list(sequence)
+        for i, elem in enumerate(sequence):
+            self.file.write(elem)
+            if i < len(sequence) - 1:  # add space unless this is the last one
+                self.file.write(" ")
+        self.file.write("\n")
+        self.file.flush()
+
+    def close(self) -> None:
+        """
+        closes the file
+        """
+        if self.own_file:
+            self.file.close()
 
 
-logger = Logger()
+def filter_excluded_keys(
+    key_values: Dict[str, Any],
+    key_excluded: Dict[str, Union[str, Tuple[str, ...]]],
+    _format: str,
+) -> Dict[str, Any]:
+    """
+    Filters the keys specified by ``key_exclude`` for the specified format
+    :param key_values: log dictionary to be filtered
+    :param key_excluded: keys to be excluded per format
+    :param _format: format for which this filter is run
+    :return: dict without the excluded keys
+    """
 
+    def is_excluded(key: str) -> bool:
+        return (
+            key in key_excluded
+            and key_excluded[key] is not None
+            and _format in key_excluded[key]
+        )
+
+    return {key: value for key, value in key_values.items() if not is_excluded(key)}
+
+
+class JSONOutputFormat(KVWriter):
+    """
+    Log to a file, in the JSON format
+    :param filename: the file to write the log to
+    """
+
+    def __init__(self, filename: str):
+        self.file = open(filename, "wt")
+
+    def write(
+        self,
+        key_values: Dict[str, Any],
+        key_excluded: Dict[str, Union[str, Tuple[str, ...]]],
+        step: int = 0,
+    ) -> None:
+        def cast_to_json_serializable(value: Any):
+            if isinstance(value, Video):
+                raise FormatUnsupportedError(["json"], "video")
+            if isinstance(value, Figure):
+                raise FormatUnsupportedError(["json"], "figure")
+            if isinstance(value, Image):
+                raise FormatUnsupportedError(["json"], "image")
+            if isinstance(value, HParam):
+                raise FormatUnsupportedError(["json"], "hparam")
+            if hasattr(value, "dtype"):
+                if value.shape == () or len(value) == 1:
+                    # if value is a dimensionless numpy array or of length 1, serialize as a float
+                    return float(value)
+                else:
+                    # otherwise, a value is a numpy array, serialize as a list or nested lists
+                    return value.tolist()
+            return value
+
+        key_values = {
+            key: cast_to_json_serializable(value)
+            for key, value in filter_excluded_keys(
+                key_values, key_excluded, "json"
+            ).items()
+        }
+        self.file.write(json.dumps(key_values) + "\n")
+        self.file.flush()
+
+    def close(self) -> None:
+        """
+        closes the file
+        """
+
+        self.file.close()
+
+
+class CSVOutputFormat(KVWriter):
+    """
+    Log to a file, in a CSV format
+    :param filename: the file to write the log to
+    """
+
+    def __init__(self, filename: str):
+        self.file = open(filename, "w+t")
+        self.keys = []
+        self.separator = ","
+        self.quotechar = '"'
+
+    def write(
+        self,
+        key_values: Dict[str, Any],
+        key_excluded: Dict[str, Union[str, Tuple[str, ...]]],
+        step: int = 0,
+    ) -> None:
+        # Add our current row to the history
+        key_values = filter_excluded_keys(key_values, key_excluded, "csv")
+        extra_keys = key_values.keys() - self.keys
+        if extra_keys:
+            self.keys.extend(extra_keys)
+            self.file.seek(0)
+            lines = self.file.readlines()
+            self.file.seek(0)
+            for i, key in enumerate(self.keys):
+                if i > 0:
+                    self.file.write(",")
+                self.file.write(key)
+            self.file.write("\n")
+            for line in lines[1:]:
+                self.file.write(line[:-1])
+                self.file.write(self.separator * len(extra_keys))
+                self.file.write("\n")
+        for i, key in enumerate(self.keys):
+            if i > 0:
+                self.file.write(",")
+            value = key_values.get(key)
+
+            if isinstance(value, Video):
+                raise FormatUnsupportedError(["csv"], "video")
+
+            elif isinstance(value, Figure):
+                raise FormatUnsupportedError(["csv"], "figure")
+
+            elif isinstance(value, Image):
+                raise FormatUnsupportedError(["csv"], "image")
+
+            elif isinstance(value, HParam):
+                raise FormatUnsupportedError(["csv"], "hparam")
+
+            elif isinstance(value, str):
+                # escape quotechars by prepending them with another quotechar
+                value = value.replace(self.quotechar, self.quotechar + self.quotechar)
+
+                # additionally wrap text with quotechars so that any delimiters in the text are ignored by csv readers
+                self.file.write(self.quotechar + value + self.quotechar)
+
+            elif value is not None:
+                self.file.write(str(value))
+        self.file.write("\n")
+        self.file.flush()
+
+    def close(self) -> None:
+        """
+        closes the file
+        """
+        self.file.close()
+
+
+class TensorBoardOutputFormat(KVWriter):
+    """
+    Dumps key/value pairs into TensorBoard's numeric format.
+    :param folder: the folder to write the log to
+    """
+
+    def __init__(self, folder: str):
+        assert SummaryWriter is not None, (
+            "tensorboard is not installed, you can use "
+            "pip install tensorboard to do so"
+        )
+        self.writer = SummaryWriter(log_dir=folder)
+
+    def write(
+        self,
+        key_values: Dict[str, Any],
+        key_excluded: Dict[str, Union[str, Tuple[str, ...]]],
+        step: int = 0,
+    ) -> None:
+        for (key, value), (_, excluded) in zip(
+            sorted(key_values.items()), sorted(key_excluded.items())
+        ):
+            if excluded is not None and "tensorboard" in excluded:
+                continue
+
+            if isinstance(value, np.ScalarType):
+                if isinstance(value, str):
+                    # str is considered a np.ScalarType
+                    self.writer.add_text(key, value, step)
+                else:
+                    self.writer.add_scalar(key, value, step)
+
+            if isinstance(value, th.Tensor):
+                self.writer.add_histogram(key, value, step)
+
+            if isinstance(value, Video):
+                self.writer.add_video(key, value.frames, step, value.fps)
+
+            if isinstance(value, Figure):
+                self.writer.add_figure(key, value.figure, step, close=value.close)
+
+            if isinstance(value, Image):
+                self.writer.add_image(
+                    key, value.image, step, dataformats=value.dataformats
+                )
+
+            if isinstance(value, HParam):
+                # we don't use `self.writer.add_hparams` to have control over the log_dir
+                experiment, session_start_info, session_end_info = hparams(
+                    value.hparam_dict, metric_dict=value.metric_dict
+                )
+                self.writer.file_writer.add_summary(experiment)
+                self.writer.file_writer.add_summary(session_start_info)
+                self.writer.file_writer.add_summary(session_end_info)
+
+        # Flush the output to the file
+        self.writer.flush()
+
+    def close(self) -> None:
+        """
+        closes the file
+        """
+        if self.writer:
+            self.writer.close()
+            self.writer = None
+
+
+def make_output_format(_format: str, log_dir: str, log_suffix: str = "") -> KVWriter:
+    """
+    return a logger for the requested format
+    :param _format: the requested format to log to ('stdout', 'log', 'json' or 'csv' or 'tensorboard')
+    :param log_dir: the logging directory
+    :param log_suffix: the suffix for the log file
+    :return: the logger
+    """
+    os.makedirs(log_dir, exist_ok=True)
+    if _format == "stdout":
+        return HumanOutputFormat(sys.stdout)
+    elif _format == "log":
+        return HumanOutputFormat(os.path.join(log_dir, f"log{log_suffix}.txt"))
+    elif _format == "json":
+        return JSONOutputFormat(os.path.join(log_dir, f"progress{log_suffix}.json"))
+    elif _format == "csv":
+        return CSVOutputFormat(os.path.join(log_dir, f"progress{log_suffix}.csv"))
+    elif _format == "tensorboard":
+        return TensorBoardOutputFormat(log_dir)
+    else:
+        raise ValueError(f"Unknown format specified: {_format}")
+
+
+# ================================================================
+# Backend
+# ================================================================
+
+
+class Logger:
+    """
+    The logger class.
+    :param folder: the logging location
+    :param output_formats: the list of output formats
+    """
+
+    def __init__(self, folder: Optional[str], output_formats: List[KVWriter]):
+        self.name_to_value = defaultdict(float)  # values this iteration
+        self.name_to_count = defaultdict(int)
+        self.name_to_excluded = defaultdict(str)
+        self.level = INFO
+        self.dir = folder
+        self.output_formats = output_formats
+
+    def record(
+        self,
+        key: str,
+        value: Any,
+        exclude: Optional[Union[str, Tuple[str, ...]]] = None,
+    ) -> None:
+        """
+        Log a value of some diagnostic
+        Call this once for each diagnostic quantity, each iteration
+        If called many times, last value will be used.
+        :param key: save to log this key
+        :param value: save to log this value
+        :param exclude: outputs to be excluded
+        """
+        self.name_to_value[key] = value
+        self.name_to_excluded[key] = exclude
+
+    def record_mean(
+        self,
+        key: str,
+        value: Any,
+        exclude: Optional[Union[str, Tuple[str, ...]]] = None,
+    ) -> None:
+        """
+        The same as record(), but if called many times, values averaged.
+        :param key: save to log this key
+        :param value: save to log this value
+        :param exclude: outputs to be excluded
+        """
+        if value is None:
+            self.name_to_value[key] = None
+            return
+        old_val, count = self.name_to_value[key], self.name_to_count[key]
+        self.name_to_value[key] = old_val * count / (count + 1) + value / (count + 1)
+        self.name_to_count[key] = count + 1
+        self.name_to_excluded[key] = exclude
+
+    def dump(self, step: int = 0) -> None:
+        """
+        Write all of the diagnostics from the current iteration
+        """
+        if self.level == DISABLED:
+            return
+        for _format in self.output_formats:
+            if isinstance(_format, KVWriter):
+                _format.write(self.name_to_value, self.name_to_excluded, step)
+
+        self.name_to_value.clear()
+        self.name_to_count.clear()
+        self.name_to_excluded.clear()
+
+    def log(self, *args, level: int = INFO) -> None:
+        """
+        Write the sequence of args, with no separators,
+        to the console and output files (if you've configured an output file).
+        level: int. (see logger.py docs) If the global logger level is higher than
+                    the level argument here, don't print to stdout.
+        :param args: log the arguments
+        :param level: the logging level (can be DEBUG=10, INFO=20, WARN=30, ERROR=40, DISABLED=50)
+        """
+        if self.level <= level:
+            self._do_log(args)
+
+    def debug(self, *args) -> None:
+        """
+        Write the sequence of args, with no separators,
+        to the console and output files (if you've configured an output file).
+        Using the DEBUG level.
+        :param args: log the arguments
+        """
+        self.log(*args, level=DEBUG)
+
+    def info(self, *args) -> None:
+        """
+        Write the sequence of args, with no separators,
+        to the console and output files (if you've configured an output file).
+        Using the INFO level.
+        :param args: log the arguments
+        """
+        self.log(*args, level=INFO)
+
+    def warn(self, *args) -> None:
+        """
+        Write the sequence of args, with no separators,
+        to the console and output files (if you've configured an output file).
+        Using the WARN level.
+        :param args: log the arguments
+        """
+        self.log(*args, level=WARN)
+
+    def error(self, *args) -> None:
+        """
+        Write the sequence of args, with no separators,
+        to the console and output files (if you've configured an output file).
+        Using the ERROR level.
+        :param args: log the arguments
+        """
+        self.log(*args, level=ERROR)
+
+    # Configuration
+    # ----------------------------------------
+    def set_level(self, level: int) -> None:
+        """
+        Set logging threshold on current logger.
+        :param level: the logging level (can be DEBUG=10, INFO=20, WARN=30, ERROR=40, DISABLED=50)
+        """
+        self.level = level
+
+    def get_dir(self) -> str:
+        """
+        Get directory that log files are being written to.
+        will be None if there is no output directory (i.e., if you didn't call start)
+        :return: the logging directory
+        """
+        return self.dir
+
+    def close(self) -> None:
+        """
+        closes the file
+        """
+        for _format in self.output_formats:
+            _format.close()
+
+    # Misc
+    # ----------------------------------------
+    def _do_log(self, args) -> None:
+        """
+        log to the requested format outputs
+        :param args: the arguments to log
+        """
+        for _format in self.output_formats:
+            if isinstance(_format, SeqWriter):
+                _format.write_sequence(map(str, args))
+
+
+def configure(
+    folder: Optional[str] = None, format_strings: Optional[List[str]] = None
+) -> Logger:
+    """
+    Configure the current logger.
+    :param folder: the save location
+        (if None, $LOGDIR, if still None, tempdir/SB3-[date & time])
+    :param format_strings: the output logging format
+        (if None, $LOG_FORMAT, if still None, ['stdout', 'log', 'csv'])
+    :return: The logger object.
+    """
+    if folder is None:
+        folder = os.getenv("LOGDIR")
+    if folder is None:
+        folder = os.path.join(
+            tempfile.gettempdir(),
+            time.strftime("%Y%m%d%H%M%S", time.localtime()),
+        )
+    assert isinstance(folder, str)
+    os.makedirs(folder, exist_ok=True)
+
+    log_suffix = ""
+    if format_strings is None:
+        format_strings = os.getenv("LOG_FORMAT", "stdout,log,csv").split(",")
+
+    format_strings = list(filter(None, format_strings))
+    output_formats = [make_output_format(f, folder, log_suffix) for f in format_strings]
+
+    logger = Logger(folder=folder, output_formats=output_formats)
+    # Only print when some files will be saved
+    if len(format_strings) > 0 and format_strings != ["stdout"]:
+        logger.log(f"Logging to {folder}")
+    return logger
+
+
+# ================================================================
+# Readers
+# ================================================================
+
+
+def read_json(filename: str) -> pandas.DataFrame:
+    """
+    read a json file using pandas
+    :param filename: the file path to read
+    :return: the data in the json
+    """
+    data = []
+    with open(filename) as file_handler:
+        for line in file_handler:
+            data.append(json.loads(line))
+    return pandas.DataFrame(data)
+
+
+def read_csv(filename: str) -> pandas.DataFrame:
+    """
+    read a csv file using pandas
+    :param filename: the file path to read
+    :return: the data in the csv
+    """
+    return pandas.read_csv(filename, index_col=None, comment="#")
+
+
+# ================================================================
+# Save params
+# ================================================================
+
+
+def asdict(config):
+    dic = {}
+    config_dict = config.__dict__
+    for key, value in config_dict.items():
+        if not key.startswith("__"):
+            dic[key] = value
+    return dic
+
+
+def dump_params(logger: Logger, params: Dict):
+    dump_params = params.copy()
+    for k, v in dump_params.items():
+        dump_params[k] = str(v)
+        logger.info(f"{k}: {v}")
+    with open(os.path.join(logger.get_dir(), "params.json"), "wt") as f:
+        f.write(json.dumps(dump_params, indent=4) + "\n")
+        f.flush()
+
+
+def init_logger(config):
+    gym_name = get_gym_name(config.env, config.dataset)
+    if "eval_only" in config.__dict__.keys() and config.eval_only:
+        log_path = os.path.join(config.checkpoint_dir, f"eval_{config.eval_id.zfill(2)}")
+        if os.path.exists(log_path): shutil.rmtree(log_path)
+    else:
+        time_tag = time.strftime("%Y%m%d%H%M%S", time.localtime())
+        if config.corruption_mode == "random":
+            corrupt_tag = "rnd"
+        elif config.corruption_mode == "adversarial":
+            corrupt_tag = "adv"
+        else:
+            corrupt_tag = "none"
+        if config.corruption_obs > 0:
+            corrupt_tag += "_obs"
+        if config.corruption_act > 0:
+            corrupt_tag += "_act"
+        if config.corruption_rew > 0:
+            corrupt_tag += "_rew"
+        if hasattr(config, "logfile"):
+            config.logfile = f"{config.logfile}_{time_tag}_{str(uuid.uuid4())}"
+        else:
+            config.logfile = f"{config.alg_type}_{gym_name}_{corrupt_tag}_{config.seed}_{time_tag}_{str(uuid.uuid4())}"
+        log_path = os.path.join(config.save_path, config.group, gym_name, config.logfile)
+    log_path = os.path.expanduser(log_path)
+    os.makedirs(log_path, exist_ok=True)
+    logger = configure(log_path)
+    dump_params(logger, asdict(config))
+    return logger
+
+
+def get_gym_name(env_name, dataset):
+    if env_name == 'hopper':
+        dversion = 2
+    elif env_name == 'halfcheetah':
+        dversion = 2
+    elif env_name == 'walker2d':
+        dversion = 2
+    elif env_name == 'reacher2d':
+        dversion = 2
+    elif env_name == 'pen':
+        dversion = 1
+    elif env_name == 'hammer':
+        dversion = 1
+    elif env_name == 'door':
+        dversion = 1
+    elif env_name == 'relocate':
+        dversion = 1
+    elif env_name == 'kitchen':
+        dversion = 0
+    elif env_name == 'maze2d':
+        if 'open' in dataset:
+            dversion = 0
+        else:
+            dversion = 1
+    elif env_name == 'antmaze':
+        dversion = 0
+    else:
+        raise NotImplementedError
+    gym_name = f'{env_name}-{dataset}-v{dversion}'
+    return gym_name

@@ -1,24 +1,40 @@
+from typing import Any, DefaultDict, Dict, List, Optional, Tuple
+
 # import robohive
 import d4rl
-from mjrl.utils.gym_env import GymEnv
+# from mjrl.utils.gym_env import GymEnv
 import gym
 import numpy as np
 import torch
 
 import argparse
-import pickle
 import random
-import sys
 import os
-import pathlib
 import time
+import traceback
 
+from tqdm import trange
+from collections import defaultdict
 from decision_transformer.evaluation.evaluate_episodes import evaluate_episode_rtg
 from decision_transformer.training.ql_trainer import Trainer
 from decision_transformer.models.ql_DT import DecisionTransformer, Critic
-from logger import logger, setup_logger
-from torch.utils.tensorboard import SummaryWriter
+from decision_transformer.dataset.attack import attack_dataset
+from logger import init_logger, Logger
+# from logger import logger, setup_logger
+# from torch.utils.tensorboard import SummaryWriter
 
+
+class Dict(dict):
+    __setattr__ = dict.__setitem__
+    __getattr__ = dict.__getitem__
+
+def dictToObj(dictObj):
+    if not isinstance(dictObj, dict):
+        return dictObj
+    d = Dict()
+    for k, v in dictObj.items():
+        d[k] = dictToObj(v)
+    return d
 
 class TrainerConfig:
     # optimization parameters
@@ -44,7 +60,6 @@ def save_checkpoint(state,name):
   filename =name
   torch.save(state, filename)
 
-
 def discount_cumsum(x, gamma):
     discount_cumsum = np.zeros_like(x)
     discount_cumsum[-1] = x[-1]
@@ -61,9 +76,55 @@ def set_seed(seed):
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
+def load_d4rl_trajectories(config, env_name: str, logger: Logger = None):
+    if config.sample_ratio < 1.0:
+        dataset_path = os.path.join(config.dataset_path, "original", f"{env_name}_ratio_{config.sample_ratio}.pt")
+        dataset = torch.load(dataset_path)
+    else:
+        h5path = (
+            config.dataset_path
+            if config.dataset_path is None
+            else os.path.expanduser(f"{config.dataset_path}/{env_name}.hdf5")
+        )
+        dataset = gym.make(env_name).get_dataset(h5path=h5path)
+
+    attack_mask = np.ones_like(dataset["rewards"]) * -1
+    if config.corruption_mode != "none":
+        dataset, attack_indexs = attack_dataset(config, dataset, logger)
+        attack_mask[attack_indexs] = 1
+    dataset["attack_mask"] = attack_mask
+
+    state_mean = dataset["observations"].mean(0, keepdims=True)
+    state_std = dataset["observations"].std(0, keepdims=True) + 1e-6
+
+    traj, traj_len = [], []
+
+    data_ = defaultdict(list)
+    for i in trange(dataset["rewards"].shape[0], desc="Processing trajectories"):
+        data_["observations"].append(dataset["observations"][i])
+        data_["actions"].append(dataset["actions"][i])
+        data_["rewards"].append(dataset["rewards"][i])
+        data_["terminals"].append(dataset["terminals"][i])
+        data_["attack_mask"].append(dataset["attack_mask"][i])
+
+        if dataset["terminals"][i] or dataset["timeouts"][i]:
+            episode_data = {k: np.array(v, dtype=np.float32) for k, v in data_.items()}
+            traj.append(episode_data)
+            traj_len.append(episode_data["actions"].shape[0])
+            # reset trajectory buffer
+            data_ = defaultdict(list)
+
+    info = {
+        "obs_mean": state_mean,
+        "obs_std": state_std,
+        "traj_lens": np.array(traj_len),
+    }
+    return traj, info
+
 def experiment(
         exp_prefix,
         variant,
+        logger: Logger = None,
 ):
     device = variant.get('device', 'cuda')
 
@@ -85,14 +146,14 @@ def experiment(
         gym_name = f'{env_name}-{dataset}-v{dversion}'
         env = gym.make(gym_name)
         max_ep_len = 1000
-        env_targets = [12000, 9000, 6000]
+        env_targets = [12000, 6000]
         scale = 1000.
     elif env_name == 'walker2d':
         dversion = 2
         gym_name = f'{env_name}-{dataset}-v{dversion}'
         env = gym.make(gym_name)
         max_ep_len = 1000
-        env_targets = [5000, 4000, 2500]
+        env_targets = [5000, 2500]
         scale = 1000.
     elif env_name == 'reacher2d':
         # from decision_transformer.envs.reacher_2d import Reacher2dEnv
@@ -136,7 +197,7 @@ def experiment(
         gym_name = f'{env_name}-{dataset}-v{dversion}'
         env = gym.make(gym_name)
         max_ep_len = 1000
-        env_targets = [500, 250]
+        env_targets = [500, 400]
         scale = 100.
     elif env_name == 'maze2d':
         if 'open' in dataset:
@@ -167,13 +228,13 @@ def experiment(
     if variant['test_scale'] is None:
         variant['test_scale'] = scale
 
-    if not os.path.exists(os.path.join(variant['save_path'], exp_prefix)):
-        pathlib.Path(
-        args.save_path +
-        exp_prefix).mkdir(
-        parents=True,
-        exist_ok=True)
-    setup_logger(exp_prefix, variant=variant, log_dir=os.path.join(variant['save_path'], exp_prefix))
+    # if not os.path.exists(os.path.join(variant['save_path'], exp_prefix)):
+    #     pathlib.Path(
+    #     variant["save_path +
+    #     exp_prefix).mkdir(
+    #     parents=True,
+    #     exist_ok=True)
+    # setup_logger(exp_prefix, variant=variant, log_dir=os.path.join(variant['save_path'], gym_name, exp_prefix))
 
     # writer = SummaryWriter(os.path.join(variant['save_path'], exp_prefix))
     writer = None
@@ -186,10 +247,30 @@ def experiment(
     act_dim = env.action_space.shape[0]
 
     # load dataset
+    attack_config = {
+        "env": gym_name,
+        "device": device,
+        'dataset_path': variant["dataset_path"],
+        'corruption_agent': variant["corruption_agent"],
+        "corruption_seed": variant["corruption_seed"],
+        "corruption_mode": variant["corruption_mode"],
+        "corruption_obs": variant["corruption_obs"],
+        "corruption_act": variant["corruption_act"],
+        "corruption_rew": variant["corruption_rew"],
+        "corruption_rate": variant["corruption_rate"],
+        "sample_ratio": variant["sample_ratio"],
+        "froce_attack": variant["froce_attack"],
+        "use_original": variant["use_original"],
+        "same_index": variant["same_index"],
+    }
+    attack_config = dictToObj(attack_config)
+    trajectories, traj_info = load_d4rl_trajectories(attack_config, gym_name, logger=logger)
+    state_mean = traj_info['obs_mean']
+    state_std = traj_info['obs_std']
 
-    dataset_path = f'D4RL/{env_name}-{dataset}-v{dversion}.pkl'
-    with open(dataset_path, 'rb') as f:
-        trajectories = pickle.load(f)
+    # dataset_path = f'D4RL/{env_name}-{dataset}-v{dversion}.pkl'
+    # with open(dataset_path, 'rb') as f:
+    #     trajectories = pickle.load(f)
 
     # save all path information into separate lists
     mode = variant.get('mode', 'normal')
@@ -204,17 +285,18 @@ def experiment(
     traj_lens, returns = np.array(traj_lens), np.array(returns)
 
     # used for input normalization
-    states = np.concatenate(states, axis=0)
-    state_mean, state_std = np.mean(states, axis=0), np.std(states, axis=0) + 1e-6
+    # states = np.concatenate(states, axis=0)
+    # state_mean, state_std = np.mean(states, axis=0), np.std(states, axis=0) + 1e-6
+
 
     num_timesteps = sum(traj_lens)
 
-    logger.log('=' * 50)
-    logger.log(f'Starting new experiment: {env_name} {dataset}')
-    logger.log(f'{len(traj_lens)} trajectories, {num_timesteps} timesteps found')
-    logger.log(f'Average return: {np.mean(returns):.2f}, std: {np.std(returns):.2f}')
-    logger.log(f'Max return: {np.max(returns):.2f}, min: {np.min(returns):.2f}')
-    logger.log('=' * 50)
+    logger.info('=' * 50)
+    logger.info(f'Starting new experiment: {gym_name}')
+    logger.info(f'{len(traj_lens)} trajectories, {num_timesteps} timesteps found')
+    logger.info(f'Average return: {np.mean(returns):.2f}, std: {np.std(returns):.2f}')
+    logger.info(f'Max return: {np.max(returns):.2f}, min: {np.min(returns):.2f}')
+    logger.info('=' * 50)
 
     K = variant['K']
     batch_size = variant['batch_size']
@@ -313,12 +395,22 @@ def experiment(
                     )
                 returns.append(ret)
                 lengths.append(length)
+            # return {
+            #     f'target_{target_rew}_return_mean': np.mean(returns),
+            #     f'target_{target_rew}_return_std': np.std(returns),
+            #     f'target_{target_rew}_length_mean': np.mean(lengths),
+            #     f'target_{target_rew}_length_std': np.std(lengths),
+            #     f'target_{target_rew}_normalized_score': env.get_normalized_score(np.mean(returns)),
+            # }
+            returns = np.array(returns)
+            normalized_score = env.get_normalized_score(returns) * 100.0
             return {
-                f'target_{target_rew}_return_mean': np.mean(returns),
-                f'target_{target_rew}_return_std': np.std(returns),
-                f'target_{target_rew}_length_mean': np.mean(lengths),
-                f'target_{target_rew}_length_std': np.std(lengths),
-                f'target_{target_rew}_normalized_score': env.get_normalized_score(np.mean(returns)),
+                f'reward_mean': np.mean(returns),
+                f'reward_std': np.std(returns),
+                f'reward_length_mean': np.mean(lengths),
+                f'reward_length_std': np.std(lengths),
+                f'normalized_score_mean': np.mean(normalized_score),
+                f'normalized_score_std': np.std(normalized_score),
             }
         return fn
 
@@ -347,6 +439,9 @@ def experiment(
 
     model = model.to(device=device)
     critic = critic.to(device=device)
+
+    logger.info(f"Model:\n{str(model)}")
+    logger.info(f"Critic:\n{str(critic)}")
 
     trainer = Trainer(
         model=model,
@@ -378,9 +473,20 @@ def experiment(
     best_ret = -10000
     best_nor_ret = -1000
     best_iter = -1
+
+    outputs = trainer.eval_episode()
+    logger.record("epoch", 0)
+    for k, v in outputs.items():
+        logger.record(k, v)
+    logger.dump(0)
+
     for iter in range(variant['max_iters']):
-        outputs = trainer.train_iteration(num_steps=variant['num_steps_per_iter'], logger=logger, 
-                    iter_num=iter+1, log_writer=writer)
+        outputs = trainer.train_iteration(num_steps=variant['num_steps_per_iter'])
+            # logger=logger, iter_num=iter+1, log_writer=writer)
+        logger.record("epoch", iter+1)
+        for k, v in outputs.items():
+            logger.record(k, v)
+        logger.dump(iter+1)
         trainer.scale_up_eta(variant['lambda'])
         ret = outputs['Best_return_mean']
         nor_ret = outputs['Best_normalized_score']
@@ -390,41 +496,42 @@ def experiment(
                 'actor': trainer.actor.state_dict(),
                 'critic': trainer.critic_target.state_dict(),
             }
-            save_checkpoint(state, os.path.join(variant['save_path'], exp_prefix, 'epoch_{}.pth'.format(iter + 1)))
+            # save_checkpoint(state, os.path.join(variant['save_path'], exp_prefix, 'epoch_{}.pth'.format(iter + 1)))
             best_ret = ret
             best_nor_ret = nor_ret
             best_iter = iter + 1
-        logger.log(f'Current best return mean is {best_ret}, normalized score is {best_nor_ret*100}, Iteration {best_iter}')
+        logger.info(f'Current best return mean is {best_ret}, normalized score is {best_nor_ret*100}, Iteration {best_iter}')
         
         if variant['early_stop'] and iter >= variant['early_epoch']:
             break
-    logger.log(f'The final best return mean is {best_ret}')
-    logger.log(f'The final best normalized return is {best_nor_ret * 100}')
+    logger.info(f'The final best return mean is {best_ret}')
+    logger.info(f'The final best normalized return is {best_nor_ret * 100}')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--exp_name', type=str, default='gym-experiment')
+    parser.add_argument('--alg_type', type=str, default='QT')
+    parser.add_argument('--exp_name', type=str, default='QT')
     parser.add_argument('--seed', type=int, default=123)
-    parser.add_argument('--env', type=str, default='hopper')
+    parser.add_argument('--env', type=str, default='walker2d')
     parser.add_argument('--dataset', type=str, default='medium')  # medium, medium-replay, medium-expert, expert
     parser.add_argument('--mode', type=str, default='normal')  # normal for standard setting, delayed for sparse
     parser.add_argument('--K', type=int, default=20)
     parser.add_argument('--pct_traj', type=float, default=1.)
-    parser.add_argument('--batch_size', type=int, default=256)
-    parser.add_argument('--embed_dim', type=int, default=256)
-    parser.add_argument('--n_layer', type=int, default=4)
-    parser.add_argument('--n_head', type=int, default=4)
+    parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--embed_dim', type=int, default=128)
+    parser.add_argument('--n_layer', type=int, default=3)
+    parser.add_argument('--n_head', type=int, default=1)
     parser.add_argument('--activation_function', type=str, default='relu')
     parser.add_argument('--dropout', type=float, default=0.1)
-    parser.add_argument('--learning_rate', '-lr', type=float, default=3e-4)
+    parser.add_argument('--learning_rate', '-lr', type=float, default=1e-4)
     parser.add_argument('--lr_min', type=float, default=0.)
     parser.add_argument('--weight_decay', '-wd', type=float, default=1e-4)
     parser.add_argument('--warmup_steps', type=int, default=10000)
     parser.add_argument('--num_eval_episodes', type=int, default=10)
-    parser.add_argument('--max_iters', type=int, default=500)
+    parser.add_argument('--max_iters', type=int, default=100)
     parser.add_argument('--num_steps_per_iter', type=int, default=1000)
     parser.add_argument('--device', type=str, default='cuda')
-    parser.add_argument('--save_path', type=str, default='./save/')
+    parser.add_argument('--save_path', type=str, default='~/results/corruption')
 
     parser.add_argument("--discount", default=0.99, type=float)
     parser.add_argument("--tau", default=0.005, type=float)
@@ -444,7 +551,42 @@ if __name__ == '__main__':
     parser.add_argument("--test_scale", type=float, default=None)
     parser.add_argument("--rtg_no_q", action='store_true', default=False)
     parser.add_argument("--infer_no_q", action='store_true', default=False)
+    parser.add_argument("--infer_normal", action='store_true', default=False)
     
+    # dataset attack
+    parser.add_argument('--dataset_path', type=str, default='/apdcephfs/share_1563664/ztjiaweixu/datasets')
+    parser.add_argument("--down_sample", action='store_true', default=False)
+    parser.add_argument('--sample_ratio', default=1.0, type=float)
+    parser.add_argument('--corruption_agent', default="IQL", type=str)
+    parser.add_argument('--corruption_mode', default="none", type=str, choices=["none", "random", "adversarial"])
+    parser.add_argument('--corruption_seed', default=0, type=int)
+    parser.add_argument('--corruption_obs', default=0.1, type=float)
+    parser.add_argument('--corruption_act', default=0.0, type=float)
+    parser.add_argument('--corruption_rew', default=0.0, type=float)
+    parser.add_argument('--corruption_rate', default=0.3, type=float)
+    parser.add_argument('--froce_attack', default=0, type=int, choices=[0, 1])
+    parser.add_argument('--use_original', default=0, type=int, choices=[0, 1])
+    parser.add_argument('--same_index', default=0, type=int, choices=[0, 1])
+    # others
+    parser.add_argument('--group', default="2024052101", type=str)
+
     args = parser.parse_args()
 
-    experiment(args.exp_name, variant=vars(args))
+    args.early_stop = False
+    args.k_rewards = True
+    args.use_discount = True
+    args.rtg_no_q = True
+    args.infer_no_q = True
+
+    if args.down_sample:
+        if args.dataset == "medium-replay":
+            args.sample_ratio = 0.1
+        if args.env.startswith("kitchen"):
+            args.sample_ratio = 1.0
+
+    logger = init_logger(args)
+    try:
+        experiment(args.exp_name, variant=vars(args), logger=logger)
+    except Exception:
+        error_info = traceback.format_exc()
+        logger.error(f"\n{error_info}")
