@@ -586,14 +586,6 @@ def attack_dataset(config, dataset, logger):
         dataset = ori_dataset if config.use_original else att_dataset
         attack_indexs.append(attack_agent.attack_indexs)
         logger.info(f"{config.corruption_mode} rewards")
-    if config.corruption_next_obs > 0:
-        name += f"_next_obs_{config.corruption_next_obs}_{config.corruption_rate}"
-        attack_params["corruption_range"] = config.corruption_next_obs
-        attack_agent.set_attack_config(name, "next_obs", **attack_params)
-        ori_dataset, att_dataset = attack_agent.attack(dataset)
-        dataset = ori_dataset if config.use_original else att_dataset
-        attack_indexs.append(attack_agent.attack_indexs)
-        logger.info(f"{config.corruption_mode} next_observations")
     logger.info(f"Attack name: {name}")
 
     attack_indexs = np.hstack(attack_indexs)

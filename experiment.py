@@ -164,34 +164,33 @@ def experiment(
         scale = 10.
         dversion = 2
     elif env_name == 'pen':
-        dversion = 1
+        dversion = 0
         gym_name = f'{env_name}-{dataset}-v{dversion}'
         env = gym.make(gym_name)
         max_ep_len = 1000
-        env_targets = [12000, 6000]
+        env_targets = [3100, 1550]
         scale = 1000.
     elif env_name == 'hammer':
-        dversion = 1
+        dversion = 0
         gym_name = f'{env_name}-{dataset}-v{dversion}'
         env = gym.make(gym_name)
         max_ep_len = 1000
-        env_targets = [12000, 6000, 3000]
+        env_targets = [12800, 6400]
         scale = 1000.
     elif env_name == 'door':
-        dversion = 1
+        dversion = 0
         gym_name = f'{env_name}-{dataset}-v{dversion}'
         env = gym.make(gym_name)
         max_ep_len = 1000
-        env_targets = [2000, 1000, 500]
+        env_targets = [2900, 1450]
         scale = 100.
     elif env_name == 'relocate':
-        dversion = 1
+        dversion = 0
         gym_name = f'{env_name}-{dataset}-v{dversion}'
         env = gym.make(gym_name)
         max_ep_len = 1000
-        env_targets = [3000, 1000]
+        env_targets = [4300, 2150]
         scale = 1000.
-        dversion = 1
     elif env_name == 'kitchen':
         dversion = 0
         gym_name = f'{env_name}-{dataset}-v{dversion}'
@@ -430,7 +429,9 @@ def experiment(
         scale=scale,
         sar=variant['sar'],
         rtg_no_q=variant['rtg_no_q'],
-        infer_no_q=variant['infer_no_q']
+        infer_no_q=variant['infer_no_q'],
+        pred_s=variant['pred_s'],
+        pred_r=variant['pred_r'],
     )
     critic = Critic(
         state_dim, act_dim, hidden_dim=variant['embed_dim']
@@ -513,11 +514,11 @@ if __name__ == '__main__':
     parser.add_argument('--exp_name', type=str, default='QT')
     parser.add_argument('--seed', type=int, default=123)
     parser.add_argument('--env', type=str, default='walker2d')
-    parser.add_argument('--dataset', type=str, default='medium')  # medium, medium-replay, medium-expert, expert
+    parser.add_argument('--dataset', type=str, default='medium-replay')  # medium, medium-replay, medium-expert, expert
     parser.add_argument('--mode', type=str, default='normal')  # normal for standard setting, delayed for sparse
     parser.add_argument('--K', type=int, default=20)
     parser.add_argument('--pct_traj', type=float, default=1.)
-    parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--batch_size', type=int, default=256)
     parser.add_argument('--embed_dim', type=int, default=128)
     parser.add_argument('--n_layer', type=int, default=3)
     parser.add_argument('--n_head', type=int, default=1)
@@ -552,6 +553,8 @@ if __name__ == '__main__':
     parser.add_argument("--rtg_no_q", action='store_true', default=False)
     parser.add_argument("--infer_no_q", action='store_true', default=False)
     parser.add_argument("--infer_normal", action='store_true', default=False)
+    parser.add_argument("--pred_s", action='store_true', default=False)
+    parser.add_argument("--pred_r", action='store_true', default=False)
     
     # dataset attack
     parser.add_argument('--dataset_path', type=str, default='/apdcephfs/share_1563664/ztjiaweixu/datasets')
@@ -560,7 +563,7 @@ if __name__ == '__main__':
     parser.add_argument('--corruption_agent', default="IQL", type=str)
     parser.add_argument('--corruption_mode', default="none", type=str, choices=["none", "random", "adversarial"])
     parser.add_argument('--corruption_seed', default=0, type=int)
-    parser.add_argument('--corruption_obs', default=0.1, type=float)
+    parser.add_argument('--corruption_obs', default=0.0, type=float)
     parser.add_argument('--corruption_act', default=0.0, type=float)
     parser.add_argument('--corruption_rew', default=0.0, type=float)
     parser.add_argument('--corruption_rate', default=0.3, type=float)
@@ -577,6 +580,16 @@ if __name__ == '__main__':
     args.use_discount = True
     args.rtg_no_q = True
     args.infer_no_q = True
+
+    # hyperparameters
+    if args.dataset == "medium-replay":
+        args.batch_size = 128
+        args.learning_rate = 1e-4
+        args.lr_decay = False
+    if args.env.startswith("kitchen"):
+        args.batch_size = 256
+        args.learning_rate = 3e-4
+        args.lr_decay = True
 
     if args.down_sample:
         if args.dataset == "medium-replay":

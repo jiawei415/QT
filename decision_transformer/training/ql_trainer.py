@@ -271,9 +271,12 @@ class Trainer:
 
         action_preds_ = action_preds.reshape(-1, action_dim)[attention_mask.reshape(-1) > 0]
         action_target_ = action_target.reshape(-1, action_dim)[attention_mask.reshape(-1) > 0]
-        state_preds = state_preds[:, :-1]
-        state_target = states[:, 1:]
-        states_loss = ((state_preds - state_target) ** 2)[attention_mask[:, :-1]>0].mean()
+        if state_preds is not None:
+            state_preds = state_preds[:, :-1]
+            state_target = states[:, 1:]
+            states_loss = ((state_preds - state_target) ** 2)[attention_mask[:, :-1]>0].mean()
+        else:
+            states_loss = 0
         if reward_preds is not None:
             reward_preds = reward_preds.reshape(-1, 1)[attention_mask.reshape(-1) > 0]
             reward_target = rewards.reshape(-1, 1)[attention_mask.reshape(-1) > 0] / self.scale

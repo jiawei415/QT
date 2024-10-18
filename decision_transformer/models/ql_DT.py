@@ -57,6 +57,8 @@ class DecisionTransformer(TrajectoryModel):
             scale=1.,
             rtg_no_q=False,
             infer_no_q=False,
+            pred_s=False,
+            pred_r=False,
             **kwargs
     ):
         super().__init__(state_dim, act_dim, max_length=max_length)
@@ -72,6 +74,8 @@ class DecisionTransformer(TrajectoryModel):
         self.scale = scale
         self.rtg_no_q = rtg_no_q
         self.infer_no_q = infer_no_q
+        self.pred_s = pred_s
+        self.pred_r = pred_r
 
         # note: the only difference between this GPT2Model and the default Huggingface version
         # is that the positional embeddings are removed (since we'll add those ourselves)
@@ -144,12 +148,24 @@ class DecisionTransformer(TrajectoryModel):
         # get predictions
         if self.sar:
             action_preds = self.predict_action(x[:, 0])
-            rewards_preds = self.predict_rewards(x[:, 1])
-            state_preds = self.predict_state(x[:, 2])
+            if self.pred_r:
+                rewards_preds = self.predict_rewards(x[:, 1])
+            else:
+                rewards_preds = None
+            if self.pred_s:
+                state_preds = self.predict_state(x[:, 2])
+            else:
+                state_preds = None
         else:
             action_preds = self.predict_action(x[:, 1])
-            state_preds = self.predict_state(x[:, 2])
-            rewards_preds = None
+            if self.pred_r:
+                rewards_preds = self.predict_rewards(x[:, 2])
+            else:
+                rewards_preds = None
+            if self.pred_s:
+                state_preds = self.predict_state(x[:, 2])
+            else:
+                state_preds = None
 
 
         return state_preds, action_preds, rewards_preds
@@ -202,7 +218,7 @@ class DecisionTransformer(TrajectoryModel):
         returns_to_go[bs:, -1] = returns_to_go[bs:, -1] + torch.randn_like(returns_to_go[bs:, -1]) * 0.1
         if not self.rtg_no_q:
             returns_to_go[-1, -1] = critic.q_min(states[-1:, -2], actions[-1:, -2]).flatten() - rewards[-1, -2] / self.scale
-        _, action_preds, return_preds = self.forward(states, actions, rewards, None, returns_to_go=returns_to_go, timesteps=timesteps, attention_mask=attention_mask, **kwargs)
+        _, action_preds, _ = self.forward(states, actions, rewards, None, returns_to_go=returns_to_go, timesteps=timesteps, attention_mask=attention_mask, **kwargs)
     
         
         state_rpt = states[:, -1, :]

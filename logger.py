@@ -794,13 +794,13 @@ def get_gym_name(env_name, dataset):
     elif env_name == 'reacher2d':
         dversion = 2
     elif env_name == 'pen':
-        dversion = 1
+        dversion = 0
     elif env_name == 'hammer':
-        dversion = 1
+        dversion = 0
     elif env_name == 'door':
-        dversion = 1
+        dversion = 0
     elif env_name == 'relocate':
-        dversion = 1
+        dversion = 0
     elif env_name == 'kitchen':
         dversion = 0
     elif env_name == 'maze2d':
