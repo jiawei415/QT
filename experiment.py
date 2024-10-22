@@ -17,7 +17,7 @@ from tqdm import trange
 from collections import defaultdict
 from decision_transformer.evaluation.evaluate_episodes import evaluate_episode_rtg
 from decision_transformer.training.ql_trainer import Trainer
-from decision_transformer.models.ql_DT import DecisionTransformer, Critic
+from decision_transformer.models.ql_DT import DecisionTransformer, Critic, VectorizedQ
 from decision_transformer.dataset.attack import attack_dataset
 from logger import init_logger, Logger
 # from logger import logger, setup_logger
@@ -433,8 +433,11 @@ def experiment(
         pred_s=variant['pred_s'],
         pred_r=variant['pred_r'],
     )
-    critic = Critic(
-        state_dim, act_dim, hidden_dim=variant['embed_dim']
+    # critic = Critic(
+    #     state_dim, act_dim, hidden_dim=variant['embed_dim']
+    # )
+    critic = VectorizedQ(
+        state_dim, act_dim, hidden_dim=variant['embed_dim'], num_critics=variant['num_critics']
     )
 
 
@@ -467,7 +470,9 @@ def experiment(
         grad_norm=variant['grad_norm'],
         scale=scale,
         k_rewards=variant['k_rewards'],
-        use_discount=variant['use_discount']
+        use_discount=variant['use_discount'],
+        sigma=variant['sigma'],
+        quantile=variant['quantile'],
     )
 
 
@@ -518,14 +523,16 @@ if __name__ == '__main__':
     parser.add_argument('--mode', type=str, default='normal')  # normal for standard setting, delayed for sparse
     parser.add_argument('--K', type=int, default=20)
     parser.add_argument('--pct_traj', type=float, default=1.)
-    parser.add_argument('--batch_size', type=int, default=256)
+    parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--embed_dim', type=int, default=128)
     parser.add_argument('--n_layer', type=int, default=3)
     parser.add_argument('--n_head', type=int, default=1)
+    parser.add_argument('--num_critics', type=int, default=2)
     parser.add_argument('--activation_function', type=str, default='relu')
     parser.add_argument('--dropout', type=float, default=0.1)
     parser.add_argument('--learning_rate', '-lr', type=float, default=1e-4)
     parser.add_argument('--lr_min', type=float, default=0.)
+    parser.add_argument("--lr_decay", action='store_true', default=False)
     parser.add_argument('--weight_decay', '-wd', type=float, default=1e-4)
     parser.add_argument('--warmup_steps', type=int, default=10000)
     parser.add_argument('--num_eval_episodes', type=int, default=10)
@@ -540,7 +547,6 @@ if __name__ == '__main__':
     parser.add_argument("--eta2", default=1.0, type=float)
     parser.add_argument("--lambda", default=1.0, type=float)
     parser.add_argument("--max_q_backup", action='store_true', default=False)
-    parser.add_argument("--lr_decay", action='store_true', default=False)
     parser.add_argument("--grad_norm", default=2.0, type=float)
     parser.add_argument("--early_stop", action='store_true', default=False)
     parser.add_argument("--early_epoch", type=int, default=100)
@@ -555,6 +561,8 @@ if __name__ == '__main__':
     parser.add_argument("--infer_normal", action='store_true', default=False)
     parser.add_argument("--pred_s", action='store_true', default=False)
     parser.add_argument("--pred_r", action='store_true', default=False)
+    parser.add_argument("--sigma", default=None, type=float)
+    parser.add_argument("--quantile", default=0.0, type=float)
     
     # dataset attack
     parser.add_argument('--dataset_path', type=str, default='/apdcephfs/share_1563664/ztjiaweixu/datasets')
@@ -575,11 +583,12 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    args.early_stop = False
     args.k_rewards = True
     args.use_discount = True
     args.rtg_no_q = True
     args.infer_no_q = True
+    args.grad_norm = 9.0
+    # args.eta = 0.0
 
     # hyperparameters
     if args.dataset == "medium-replay":

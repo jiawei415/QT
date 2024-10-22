@@ -8,6 +8,14 @@ from tqdm import tqdm, trange
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
 
+def smooth_l1_loss(diff, sigma=1):
+    beta = 1.0 / (sigma**2)
+    diff = torch.abs(diff)
+    cond = diff < beta
+    loss = torch.where(cond, 0.5 * diff**2 / beta, diff - 0.5 * beta)
+    return loss
+
+
 class EMA():
     '''
         empirical moving average
@@ -52,7 +60,9 @@ class Trainer:
                 grad_norm=1.0,
                 scale=1.0,
                 k_rewards=True,
-                use_discount=True
+                use_discount=True,
+                sigma=0.1,
+                quantile=0.25,
             ):
         
         self.actor = model
@@ -86,6 +96,8 @@ class Trainer:
         self.scale = scale
         self.k_rewards = k_rewards
         self.use_discount = use_discount
+        self.sigma = sigma
+        self.quantile = quantile
 
         self.start_time = time.time()
         self.step = 0
@@ -185,9 +197,12 @@ class Trainer:
 
 
         '''Q Training'''
-        current_q1, current_q2 = self.critic.forward(states, actions)
+        # current_q1, current_q2 = self.critic(states, actions)
+        current_qs = self.critic(states, actions)
 
-        T = current_q1.shape[1]
+        # T = current_q1.shape[1]
+        T = states.shape[1]
+        num_q = current_qs.shape[0]
         repeat_num = 10
 
         if self.max_q_backup:
@@ -212,14 +227,18 @@ class Trainer:
             if self.max_q_backup:
                 critic_next_states = states_rpt[:, -1]
                 next_action = next_action[:, -1]
-                target_q1, target_q2 = self.critic_target(critic_next_states, next_action)
+                # target_q1, target_q2 = self.critic_target(critic_next_states, next_action)
+                target_qs = self.critic_target(critic_next_states, next_action)
                 target_q1 = target_q1.view(batch_size, repeat_num).max(dim=1, keepdim=True)[0]
                 target_q2 = target_q2.view(batch_size, repeat_num).max(dim=1, keepdim=True)[0]
             else:
                 critic_next_states = states[:, -1]
                 next_action = next_action[:, -1]
-                target_q1, target_q2 = self.critic_target(critic_next_states, next_action)
-            target_q = torch.min(target_q1, target_q2) # [B, 1]
+                # target_q1, target_q2 = self.critic_target(critic_next_states, next_action)
+                target_qs = self.critic_target(critic_next_states, next_action)
+            # target_q = torch.min(target_q1, target_q2) # [B, 1]
+            target_q = torch.quantile(target_qs.detach(), self.quantile, dim=0)
+            target_q = torch.clamp(target_q, -100, 1000)
 
             not_done =(1 - dones[:, -1]) # [B, 1]
             if self.use_discount:
@@ -249,14 +268,25 @@ class Trainer:
                 target_q1 = target_q1.view(batch_size, repeat_num, T, 1).max(dim=1)[0]
                 target_q2 = target_q2.view(batch_size, repeat_num, T, 1).max(dim=1)[0]
             else:
-                target_q1, target_q2 = self.critic_target(states, next_action) # [B, T, 1]
-            target_q = torch.min(target_q1, target_q2) # [B, T, 1]
+                # target_q1, target_q2 = self.critic_target(states, next_action) # [B, T, 1]
+                target_qs = self.critic_target(states, next_action) # [B, T, 1]
+            # target_q = torch.min(target_q1, target_q2) # [B, T, 1]
+            target_q = torch.quantile(target_qs.detach(), self.quantile, dim=0)
+            target_q = torch.clamp(target_q, -100, 1000)
             target_q = rewards[:, :-1] + self.discount * target_q[:, 1:]
             target_q = torch.cat([target_q, torch.zeros(batch_size, 1, 1).to(device)], dim=1) 
 
 
-        critic_loss = F.mse_loss(current_q1[:, :-1][attention_mask[:, :-1]>0], target_q[:, :-1][attention_mask[:, :-1]>0]) \
-            + F.mse_loss(current_q2[:, :-1][attention_mask[:, :-1]>0], target_q[:, :-1][attention_mask[:, :-1]>0]) 
+        # critic_loss = F.mse_loss(current_q1[:, :-1][attention_mask[:, :-1]>0], target_q[:, :-1][attention_mask[:, :-1]>0]) \
+        #     + F.mse_loss(current_q2[:, :-1][attention_mask[:, :-1]>0], target_q[:, :-1][attention_mask[:, :-1]>0])
+        target_q = target_q.squeeze(-1).unsqueeze(0).repeat(num_q, 1, 1)
+        current_qs = current_qs.squeeze(-1)
+        if self.sigma is None:
+            critic_loss = F.mse_loss(current_qs, target_q, reduction='none')
+        else:
+            critic_loss = smooth_l1_loss(target_q - current_qs, sigma=self.sigma)
+        critic_loss = [critic_loss[i, :, :-1][attention_mask[:, :-1]>0].mean() for i in range(num_q)]
+        critic_loss = torch.sum(torch.stack(critic_loss))
 
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
@@ -286,12 +316,15 @@ class Trainer:
         bc_loss = F.mse_loss(action_preds_, action_target_) + states_loss + rewards_loss
 
         actor_states = states.reshape(-1, state_dim)[attention_mask.reshape(-1) > 0]
-        q1_new_action, q2_new_action = self.critic(actor_states, action_preds_)
+        qs_new_action = self.critic(actor_states, action_preds_)
+        # q1_new_action, q2_new_action = self.critic(actor_states, action_preds_)
         # q1_new_action, q2_new_action = self.critic(state_target, action_preds_)
-        if np.random.uniform() > 0.5:
-            q_loss = - q1_new_action.mean() / q2_new_action.abs().mean().detach()
-        else:
-            q_loss = - q2_new_action.mean() / q1_new_action.abs().mean().detach()
+        # if np.random.uniform() > 0.5:
+        #     q_loss = - q1_new_action.mean() / q2_new_action.abs().mean().detach()
+        # else:
+        #     q_loss = - q2_new_action.mean() / q1_new_action.abs().mean().detach()
+        q_indexes = np.random.choice(num_q, 2, replace=False)
+        q_loss = - qs_new_action[q_indexes[0]].mean() / qs_new_action[q_indexes[1]].abs().mean().detach()
         actor_loss = self.eta2 * bc_loss + self.eta * q_loss
         # actor_loss = self.eta * bc_loss + q_loss
 
