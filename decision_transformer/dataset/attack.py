@@ -16,6 +16,7 @@ DATA_NAMSE = {
     "obs": "observations",
     "act": "actions",
     "rew": "rewards",
+    "rew2": "rewards",
     "next_obs": "next_observations",
 }
 
@@ -342,6 +343,10 @@ class Attack:
         # Just Placeholder
         raise NotImplementedError
 
+    def loss_Q_for_rew2(self):
+        # Just Placeholder
+        raise NotImplementedError
+
     def sample_indexs(self):
         indexs = np.arange(len(self.dataset["rewards"]))
         random_num = self._np_rng.random(len(indexs))
@@ -450,6 +455,38 @@ class Attack:
             self.logger.info(f"Random attack {self.corruption_tag}")
         else:
             attack_rew = original_rew.copy() * -self.corruption_range
+            self.logger.info(f"Adversarial attack {self.corruption_tag}")
+
+        self.save_dataset(attack_rew)
+        dataset[self.corruption_tag][self.attack_indexs] = attack_rew
+        return dataset
+
+    def corrupt_rew2(self, dataset):
+        # load original rew
+        original_rew = self.dataset[self.corruption_tag][self.attack_indexs].copy()
+        std = np.std(self.dataset[self.corruption_tag], axis=0, keepdims=True)
+        min_ = np.min(self.dataset[self.corruption_tag], axis=0, keepdims=True)
+        max_ = np.max(self.dataset[self.corruption_tag], axis=0, keepdims=True)
+
+        if self.corruption_random:
+            if min_ == 0:
+                lower = -self.corruption_range
+            elif min_ > 0:
+                lower = -self.corruption_range * min_
+            elif min_ < 0:
+                lower = self.corruption_range * min_
+            if max_ == 0:
+                upper = self.corruption_range
+            elif max_ < 0:
+                upper = -self.corruption_range * max_
+            elif max_ > 0:
+                upper = self.corruption_range * max_
+            attack_mean = self._np_rng.uniform(lower, upper, size=original_rew.shape)
+            attack_rew = self._np_rng.normal(attack_mean, std)
+            self.logger.info(f"Random attack {self.corruption_tag}")
+        else:
+            rew_range = max(max_ - min_, 1.0)
+            attack_rew = original_rew.copy() * -(self.corruption_range * rew_range)
             self.logger.info(f"Adversarial attack {self.corruption_tag}")
 
         self.save_dataset(attack_rew)
@@ -582,6 +619,14 @@ def attack_dataset(config, dataset, logger):
         name += f"_rew_{config.corruption_rew}_{config.corruption_rate}"
         attack_params["corruption_range"] = config.corruption_rew
         attack_agent.set_attack_config(name, "rew", **attack_params)
+        ori_dataset, att_dataset = attack_agent.attack(dataset)
+        dataset = ori_dataset if config.use_original else att_dataset
+        attack_indexs.append(attack_agent.attack_indexs)
+        logger.info(f"{config.corruption_mode} rewards")
+    if config.corruption_rew2 > 0:
+        name += f"_rew2_{config.corruption_rew2}_{config.corruption_rate}"
+        attack_params["corruption_range"] = config.corruption_rew2
+        attack_agent.set_attack_config(name, "rew2", **attack_params)
         ori_dataset, att_dataset = attack_agent.attack(dataset)
         dataset = ori_dataset if config.use_original else att_dataset
         attack_indexs.append(attack_agent.attack_indexs)

@@ -256,6 +256,7 @@ def experiment(
         "corruption_obs": variant["corruption_obs"],
         "corruption_act": variant["corruption_act"],
         "corruption_rew": variant["corruption_rew"],
+        "corruption_rew2": variant["corruption_rew2"],
         "corruption_rate": variant["corruption_rate"],
         "sample_ratio": variant["sample_ratio"],
         "froce_attack": variant["froce_attack"],
@@ -566,7 +567,7 @@ if __name__ == '__main__':
     
     # dataset attack
     parser.add_argument('--dataset_path', type=str, default='/apdcephfs/share_1563664/ztjiaweixu/datasets')
-    parser.add_argument("--down_sample", action='store_true', default=False)
+    parser.add_argument("--down_sample", action='store_true', default=True)
     parser.add_argument('--sample_ratio', default=1.0, type=float)
     parser.add_argument('--corruption_agent', default="IQL", type=str)
     parser.add_argument('--corruption_mode', default="none", type=str, choices=["none", "random", "adversarial"])
@@ -574,6 +575,7 @@ if __name__ == '__main__':
     parser.add_argument('--corruption_obs', default=0.0, type=float)
     parser.add_argument('--corruption_act', default=0.0, type=float)
     parser.add_argument('--corruption_rew', default=0.0, type=float)
+    parser.add_argument('--corruption_rew2', default=0.0, type=float)
     parser.add_argument('--corruption_rate', default=0.3, type=float)
     parser.add_argument('--froce_attack', default=0, type=int, choices=[0, 1])
     parser.add_argument('--use_original', default=0, type=int, choices=[0, 1])
@@ -587,8 +589,11 @@ if __name__ == '__main__':
     args.use_discount = True
     args.rtg_no_q = True
     args.infer_no_q = True
+
     args.grad_norm = 9.0
-    # args.eta = 0.0
+    # args.num_critics = 2
+    # args.sigma = None
+    # args.quantile = 0.0
 
     # hyperparameters
     if args.dataset == "medium-replay":
@@ -599,12 +604,20 @@ if __name__ == '__main__':
         args.batch_size = 256
         args.learning_rate = 3e-4
         args.lr_decay = True
+    if args.env in ["pen", "hammer", "door", "relocate"]:
+        args.batch_size = 256
+        args.learning_rate = 3e-4
+        args.lr_decay = True
+        args.eta = 0.0
 
     if args.down_sample:
         if args.dataset == "medium-replay":
             args.sample_ratio = 0.1
         if args.env.startswith("kitchen"):
             args.sample_ratio = 1.0
+
+    if args.corruption_mode == "random" and args.corruption_rew > 0.0:
+        args.corruption_rew *= 30.0
 
     logger = init_logger(args)
     try:
