@@ -134,6 +134,7 @@ class DecisionTransformer(TrajectoryModel):
             infer_no_q=False,
             pred_s=False,
             pred_r=False,
+            use_rtg=True,
             **kwargs
     ):
         super().__init__(state_dim, act_dim, max_length=max_length)
@@ -151,6 +152,7 @@ class DecisionTransformer(TrajectoryModel):
         self.infer_no_q = infer_no_q
         self.pred_s = pred_s
         self.pred_r = pred_r
+        self.use_rtg = use_rtg
 
         # note: the only difference between this GPT2Model and the default Huggingface version
         # is that the positional embeddings are removed (since we'll add those ourselves)
@@ -172,6 +174,9 @@ class DecisionTransformer(TrajectoryModel):
         self.predict_rewards = torch.nn.Linear(hidden_size, 1)
 
     def forward(self, states, actions, rewards=None, targets=None, returns_to_go=None, timesteps=None, attention_mask=None):
+
+        state_index = 1 if self.use_rtg else 0
+        seq_num = 3 if self.sar else 2
 
         batch_size, seq_length = states.shape[0], states.shape[1]
 
@@ -199,15 +204,25 @@ class DecisionTransformer(TrajectoryModel):
                 (state_embeddings, action_embeddings, reward_embeddings), dim=1
             ).permute(0, 2, 1, 3).reshape(batch_size, 3*seq_length, self.hidden_size)
         else:
-            stacked_inputs = torch.stack(
-                (returns_embeddings, state_embeddings, action_embeddings), dim=1
-            ).permute(0, 2, 1, 3).reshape(batch_size, 3*seq_length, self.hidden_size)
+            if self.use_rtg:
+                stacked_inputs = torch.stack(
+                    (returns_embeddings, state_embeddings, action_embeddings), dim=1
+                ).permute(0, 2, 1, 3).reshape(batch_size, seq_num*seq_length, self.hidden_size)
+            else:
+                stacked_inputs = torch.stack(
+                    (state_embeddings, action_embeddings), dim=1
+                ).permute(0, 2, 1, 3).reshape(batch_size, seq_num*seq_length, self.hidden_size)
         stacked_inputs = self.embed_ln(stacked_inputs)
 
         # to make the attention mask fit the stacked inputs, have to stack it as well
-        stacked_attention_mask = torch.stack(
-            (attention_mask, attention_mask, attention_mask), dim=1
-        ).permute(0, 2, 1).reshape(batch_size, 3*seq_length)
+        if self.use_rtg:
+            stacked_attention_mask = torch.stack(
+                (attention_mask, attention_mask, attention_mask, attention_mask), dim=1
+            ).permute(0, 2, 1).reshape(batch_size, seq_num*seq_length)
+        else:
+            stacked_attention_mask = torch.stack(
+                (attention_mask, attention_mask), dim=1
+            ).permute(0, 2, 1).reshape(batch_size, seq_num*seq_length)
 
         # we feed in the input embeddings (not word indices as in NLP) to the model
         transformer_outputs = self.transformer(
@@ -218,7 +233,7 @@ class DecisionTransformer(TrajectoryModel):
 
         # reshape x so that the second dimension corresponds to the original
         # returns (0), states (1), or actions (2); i.e. x[:,1,t] is the token for s_t
-        x = x.reshape(batch_size, seq_length, 3, self.hidden_size).permute(0, 2, 1, 3)
+        x = x.reshape(batch_size, seq_length, seq_num, self.hidden_size).permute(0, 2, 1, 3)
 
         # get predictions
         if self.sar:
@@ -232,13 +247,13 @@ class DecisionTransformer(TrajectoryModel):
             else:
                 state_preds = None
         else:
-            action_preds = self.predict_action(x[:, 1])
+            action_preds = self.predict_action(x[:, state_index])
             if self.pred_r:
-                rewards_preds = self.predict_rewards(x[:, 2])
+                rewards_preds = self.predict_rewards(x[:, state_index+1])
             else:
                 rewards_preds = None
             if self.pred_s:
-                state_preds = self.predict_state(x[:, 2])
+                state_preds = self.predict_state(x[:, state_index+1])
             else:
                 state_preds = None
 

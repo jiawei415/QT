@@ -433,6 +433,7 @@ def experiment(
         infer_no_q=variant['infer_no_q'],
         pred_s=variant['pred_s'],
         pred_r=variant['pred_r'],
+        use_rtg=variant['use_rtg'],
     )
     # critic = Critic(
     #     state_dim, act_dim, hidden_dim=variant['embed_dim']
@@ -562,6 +563,7 @@ if __name__ == '__main__':
     parser.add_argument("--infer_normal", action='store_true', default=False)
     parser.add_argument("--pred_s", action='store_true', default=False)
     parser.add_argument("--pred_r", action='store_true', default=False)
+    parser.add_argument("--use_rtg", action='store_true', default=False)
     parser.add_argument("--sigma", default=None, type=float)
     parser.add_argument("--quantile", default=0.0, type=float)
     
@@ -590,10 +592,12 @@ if __name__ == '__main__':
     args.rtg_no_q = True
     args.infer_no_q = True
 
+    args.use_rtg = True
     args.grad_norm = 9.0
     # args.num_critics = 2
     # args.sigma = None
     # args.quantile = 0.0
+    # args.eta = 0.0
 
     # hyperparameters
     if args.dataset == "medium-replay":
@@ -608,7 +612,6 @@ if __name__ == '__main__':
         args.batch_size = 256
         args.learning_rate = 3e-4
         args.lr_decay = True
-        args.eta = 0.0
 
     if args.down_sample:
         if args.dataset == "medium-replay":
