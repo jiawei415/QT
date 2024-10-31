@@ -176,7 +176,7 @@ class DecisionTransformer(TrajectoryModel):
     def forward(self, states, actions, rewards=None, targets=None, returns_to_go=None, timesteps=None, attention_mask=None):
 
         state_index = 1 if self.use_rtg else 0
-        seq_num = 3 if self.sar else 2
+        seq_num = 3 if self.use_rtg else 2
 
         batch_size, seq_length = states.shape[0], states.shape[1]
 
@@ -217,7 +217,7 @@ class DecisionTransformer(TrajectoryModel):
         # to make the attention mask fit the stacked inputs, have to stack it as well
         if self.use_rtg:
             stacked_attention_mask = torch.stack(
-                (attention_mask, attention_mask, attention_mask, attention_mask), dim=1
+                (attention_mask, attention_mask, attention_mask), dim=1
             ).permute(0, 2, 1).reshape(batch_size, seq_num*seq_length)
         else:
             stacked_attention_mask = torch.stack(
