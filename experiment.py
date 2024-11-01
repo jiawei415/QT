@@ -258,6 +258,7 @@ def experiment(
         "corruption_rew": variant["corruption_rew"],
         "corruption_rew2": variant["corruption_rew2"],
         "corruption_rate": variant["corruption_rate"],
+        "corruption_step": variant["corruption_step"],
         "sample_ratio": variant["sample_ratio"],
         "froce_attack": variant["froce_attack"],
         "use_original": variant["use_original"],
@@ -579,6 +580,7 @@ if __name__ == '__main__':
     parser.add_argument('--corruption_rew', default=0.0, type=float)
     parser.add_argument('--corruption_rew2', default=0.0, type=float)
     parser.add_argument('--corruption_rate', default=0.3, type=float)
+    parser.add_argument('--corruption_step', default=1, type=int)
     parser.add_argument('--froce_attack', default=0, type=int, choices=[0, 1])
     parser.add_argument('--use_original', default=0, type=int, choices=[0, 1])
     parser.add_argument('--same_index', default=0, type=int, choices=[0, 1])

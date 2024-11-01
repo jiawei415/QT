@@ -224,6 +224,7 @@ class Attack:
         step_size: float = 0.01,
         same_index: bool = False,
         froce_attack: bool = False,
+        attack_step: int = 1,
         seed: int = 2023,
         device: str = "cpu",
         logger: Logger = None,
@@ -237,6 +238,7 @@ class Attack:
         self.step_size = step_size
         self.same_index = same_index
         self.froce_attack = froce_attack
+        self.attack_step = attack_step
         self.seed = seed
         self.device = device
         self.logger = logger
@@ -349,10 +351,18 @@ class Attack:
 
     def sample_indexs(self):
         indexs = np.arange(len(self.dataset["rewards"]))
-        random_num = self._np_rng.random(len(indexs))
+        random_num = self._np_rng.random(len(indexs) - self.attack_step + 1)
         attacked = np.where(random_num < self.corruption_rate)[0]
-        original = np.where(random_num >= self.corruption_rate)[0]
-        return indexs[attacked], indexs[original]
+        if self.attack_step > 1:
+            temp_attacked = attacked.copy()
+            for i in range(1, self.attack_step):
+                attacked = np.append(attacked, temp_attacked + i)
+            attacked = np.unique(attacked)
+            attacked = np.sort(attacked)
+            assert np.max(attacked) < len(indexs)
+        original = np.delete(indexs, attacked)
+        assert len(attacked) + len(original) == len(indexs)
+        return attacked, original
 
     def sample_para(self, data, std):
         return (
@@ -585,6 +595,7 @@ def attack_dataset(config, dataset, logger):
         dataset_path=config.dataset_path,
         same_index=config.same_index,
         froce_attack=config.froce_attack,
+        attack_step=config.corruption_step,
         seed=config.corruption_seed,
         device=config.device,
         logger=logger,
@@ -598,6 +609,7 @@ def attack_dataset(config, dataset, logger):
     name = ""
     if config.sample_ratio < 1:
         name += f"_ratio_{config.sample_ratio}"
+    name += f"_step_{config.corruption_step}"
     attack_indexs = []
     if config.corruption_obs > 0:
         name += f"_obs_{config.corruption_obs}_{config.corruption_rate}"
