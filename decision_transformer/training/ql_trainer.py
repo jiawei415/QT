@@ -49,6 +49,8 @@ class Trainer:
                 max_q_backup=False,
                 eta=1.0,
                 eta2=1.0,
+                eta_r=1.0,
+                eta_s=1.0,
                 ema_decay=0.995,
                 step_start_ema=1000,
                 update_ema_every=5,
@@ -92,6 +94,8 @@ class Trainer:
         self.grad_norm = grad_norm
         self.eta = eta
         self.eta2 = eta2
+        self.eta_r = eta_r
+        self.eta_s = eta_s
         self.lr_decay = lr_decay
         self.scale = scale
         self.k_rewards = k_rewards
@@ -313,7 +317,7 @@ class Trainer:
             rewards_loss = F.mse_loss(reward_preds, reward_target)
         else:
             rewards_loss = 0
-        bc_loss = F.mse_loss(action_preds_, action_target_) + states_loss + rewards_loss
+        bc_loss = F.mse_loss(action_preds_, action_target_) + self.eta_s * states_loss + self.eta_r * rewards_loss
 
         actor_states = states.reshape(-1, state_dim)[attention_mask.reshape(-1) > 0]
         qs_new_action = self.critic(actor_states, action_preds_)

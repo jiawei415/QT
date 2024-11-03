@@ -548,6 +548,8 @@ if __name__ == '__main__':
     parser.add_argument("--tau", default=0.005, type=float)
     parser.add_argument("--eta", default=1.0, type=float)
     parser.add_argument("--eta2", default=1.0, type=float)
+    parser.add_argument("--eta_r", default=1.0, type=float)
+    parser.add_argument("--eta_s", default=1.0, type=float)
     parser.add_argument("--lambda", default=1.0, type=float)
     parser.add_argument("--max_q_backup", action='store_true', default=False)
     parser.add_argument("--grad_norm", default=2.0, type=float)
