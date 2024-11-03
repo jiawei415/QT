@@ -1,17 +1,17 @@
-ratio=0.02
-python ratio_dataset.py --env_name hopper-medium-v2 --ratio $ratio
-python ratio_dataset.py --env_name walker2d-medium-v2 --ratio $ratio
-python ratio_dataset.py --env_name halfcheetah-medium-v2 --ratio $ratio
+# ratio=0.02
+# python ratio_dataset.py --env_name hopper-medium-v2 --ratio $ratio
+# python ratio_dataset.py --env_name walker2d-medium-v2 --ratio $ratio
+# python ratio_dataset.py --env_name halfcheetah-medium-v2 --ratio $ratio
 
-ratio=0.1
-python ratio_dataset.py --env_name hopper-medium-replay-v2 --ratio $ratio
-python ratio_dataset.py --env_name walker2d-medium-replay-v2 --ratio $ratio
-python ratio_dataset.py --env_name halfcheetah-medium-replay-v2 --ratio $ratio
+# ratio=0.1
+# python ratio_dataset.py --env_name hopper-medium-replay-v2 --ratio $ratio
+# python ratio_dataset.py --env_name walker2d-medium-replay-v2 --ratio $ratio
+# python ratio_dataset.py --env_name halfcheetah-medium-replay-v2 --ratio $ratio
 
-ratio=0.01
-python ratio_dataset.py --env_name hopper-medium-expert-v2 --ratio $ratio
-python ratio_dataset.py --env_name walker2d-medium-expert-v2 --ratio $ratio
-python ratio_dataset.py --env_name halfcheetah-medium-expert-v2 --ratio $ratio
+# ratio=0.01
+# python ratio_dataset.py --env_name hopper-medium-expert-v2 --ratio $ratio
+# python ratio_dataset.py --env_name walker2d-medium-expert-v2 --ratio $ratio
+# python ratio_dataset.py --env_name halfcheetah-medium-expert-v2 --ratio $ratio
 
 # python ratio_dataset.py --env_name kitchen-complete-v0 --ratio $ratio
 # python ratio_dataset.py --env_name kitchen-partial-v0 --ratio $ratio
@@ -19,16 +19,23 @@ python ratio_dataset.py --env_name halfcheetah-medium-expert-v2 --ratio $ratio
 
 # ratio=0.01
 # python ratio_dataset.py --env_name door-expert-v0 --ratio $ratio
-# python ratio_dataset.py --env_name pen-expert-v0 --ratio $ratio
 # python ratio_dataset.py --env_name hammer-expert-v0 --ratio $ratio
 # python ratio_dataset.py --env_name relocate-expert-v0 --ratio $ratio
+# python ratio_dataset.py --env_name pen-expert-v0 --ratio 0.005
+
+# ratio=0.02
+# python ratio_dataset.py --env_name door-human-v0 --ratio $ratio
+# python ratio_dataset.py --env_name hammer-human-v0 --ratio $ratio
+# python ratio_dataset.py --env_name relocate-human-v0 --ratio $ratio
+
+# ratio=0.05
+# python ratio_dataset.py --env_name pen-cloned-v0 --ratio $ratio
 
 # ratio=0.02
 # python ratio_dataset.py --env_name antmaze-medium-diverse-v0 --ratio $ratio
 # python ratio_dataset.py --env_name antmaze-medium-play-v0 --ratio $ratio
 # python ratio_dataset.py --env_name antmaze-large-diverse-v0 --ratio $ratio
 # python ratio_dataset.py --env_name antmaze-large-play-v0 --ratio $ratio
-
 
 # 0.02
 # hopper-medium-v2 2186 -> 43      999906 -> 19805
@@ -51,9 +58,24 @@ python ratio_dataset.py --env_name halfcheetah-medium-expert-v2 --ratio $ratio
 
 # 0.01
 # door-expert-v0 5000 -> 100 1000000 -> 20000
-# pen-expert-v0 5000 -> 100 500000 -> 10000
 # hammer-expert-v0 5000 -> 100 1000000 -> 20000
 # relocate-expert-v0 5000 -> 100 1000000 -> 20000
+# 0.005
+# pen-expert-v0 5000 -> 25 500000 -> 2500
+
+# 0.02
+# door-human-v0 6214 -> 124 1000000 -> 20276
+# hammer-human-v0 5594 -> 111 1000000 -> 19502
+# relocate-human-v0 5519 -> 110 1000000 -> 19747
+# 1.0
+# pen-human-v0 50 -> 50 5000 -> 5000
+
+# 1.0
+# door-cloned-v0 50 -> 50 6729 -> 6729
+# hammer-cloned-v0 70 -> 70 11310 -> 11310
+# relocate-cloned-v0 60 -> 60 9942 -> 9942
+# 0.05
+# pen-cloned-v0 5022 -> 251 499946 -> 24904
 
 # 0.02
 # antmaze-medium-diverse-v0 2923 -> 58 999935 -> 27569

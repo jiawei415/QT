@@ -622,6 +622,16 @@ if __name__ == '__main__':
             args.sample_ratio = 0.1
         if args.env.startswith("kitchen"):
             args.sample_ratio = 1.0
+        if args.env in ["hammer", "door", "relocate"]:
+            if args.dataset == "expert":
+                args.sample_ratio = 0.01
+            if args.dataset == "human":
+                args.sample_ratio = 0.02
+        if args.env == "pen":
+            if args.dataset == "expert":
+                args.sample_ratio = 0.005
+            if args.dataset == "cloned":
+                args.sample_ratio = 0.05
 
     if args.corruption_mode == "random" and args.corruption_rew > 0.0:
         args.corruption_rew *= 30.0
