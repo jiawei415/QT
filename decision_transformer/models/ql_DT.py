@@ -307,7 +307,7 @@ class DecisionTransformer(TrajectoryModel):
 
         returns_to_go[bs:, -1] = returns_to_go[bs:, -1] + torch.randn_like(returns_to_go[bs:, -1]) * 0.1
         if not self.rtg_no_q:
-            returns_to_go[-1, -1] = critic.q_min(states[-1:, -2], actions[-1:, -2]).flatten() - rewards[-1, -2] / self.scale
+            returns_to_go[-1, -1] = critic(states[-1:, -2], actions[-1:, -2]).min().flatten() - rewards[-1, -2] / self.scale
         _, action_preds, _ = self.forward(states, actions, rewards, None, returns_to_go=returns_to_go, timesteps=timesteps, attention_mask=attention_mask, **kwargs)
     
         
@@ -315,7 +315,7 @@ class DecisionTransformer(TrajectoryModel):
         action_preds = action_preds[:, -1, :]
 
         if not self.infer_no_q:
-            q_value = critic.q_min(state_rpt, action_preds).flatten()
+            q_value = critic(state_rpt, action_preds).min().flatten()
             idx = torch.multinomial(F.softmax(q_value, dim=-1), 1)
             return action_preds[idx]
         else:
