@@ -32,18 +32,20 @@ def get_pkl_itr(pklfile):
     match = itr_re.search(pklfile)
     if match:
         return match.group('itr')
-    raise ValueError(pklfile+" has no iteration number.")
+    else:
+        return "last"
+    # raise ValueError(pklfile+" has no iteration number.")
 
 def get_policy_wts(params):
     out_dict = {
-        'fc0/weight': params.fcs[0].weight.data.numpy(),
-        'fc0/bias': params.fcs[0].bias.data.numpy(),
-        'fc1/weight': params.fcs[1].weight.data.numpy(),
-        'fc1/bias': params.fcs[1].bias.data.numpy(),
-        'last_fc/weight': params.last_fc.weight.data.numpy(),
-        'last_fc/bias': params.last_fc.bias.data.numpy(),
-        'last_fc_log_std/weight': params.last_fc_log_std.weight.data.numpy(),
-        'last_fc_log_std/bias': params.last_fc_log_std.bias.data.numpy(),
+        'fc0/weight': params.fcs[0].weight.data.cpu().numpy(),
+        'fc0/bias': params.fcs[0].bias.data.cpu().numpy(),
+        'fc1/weight': params.fcs[1].weight.data.cpu().numpy(),
+        'fc1/bias': params.fcs[1].bias.data.cpu().numpy(),
+        'last_fc/weight': params.last_fc.weight.data.cpu().numpy(),
+        'last_fc/bias': params.last_fc.bias.data.cpu().numpy(),
+        'last_fc_log_std/weight': params.last_fc_log_std.weight.data.cpu().numpy(),
+        'last_fc_log_std/bias': params.last_fc_log_std.bias.data.cpu().numpy(),
     }
     return out_dict
 
@@ -83,7 +85,7 @@ def rollout(policy, env_name, max_path, num_data, random=False, attacker=None):
             torch_s = ptu.from_numpy(np.expand_dims(s, axis=0)).to(ptu.device)
             distr = policy.forward(torch_s)
             a = distr.sample()
-            logprob = distr.log_prob(a)
+            logprob = distr.log_prob(a).detach().cpu().numpy()
             a = ptu.get_numpy(a).squeeze()
 
         #mujoco only
@@ -132,7 +134,8 @@ def rollout(policy, env_name, max_path, num_data, random=False, attacker=None):
                 data[k].extend(traj_data[k])
             traj_data = get_reset_data()
         
-        s = attacker.attack_obs(s)
+        if attacker is not None:
+            s = attacker.attack_obs(s)
     
     new_data = dict(
         observations=np.array(data['observations']).astype(np.float32),
@@ -158,9 +161,9 @@ if __name__ == "__main__":
     parser.add_argument('--pklfile', type=str, default="/apdcephfs/share_1563664/ztjiaweixu/vdt_sz/2024110701")
     parser.add_argument('--output_file', type=str, default='output_data')
     parser.add_argument('--max_path', type=int, default=1000)
-    parser.add_argument('--num_data', type=int, default=10000)
+    parser.add_argument('--num_data', type=int, default=20000)
     parser.add_argument('--random', action='store_true')
-    parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--seed', type=int, default=3)
     parser.add_argument('--eval_attack', action='store_true')
     parser.add_argument('--eval_attack_eps', default=0.1, type=float)
     parser.add_argument('--eval_attack_mode', default='random', type=str, choices=['random', 'action_diff'])
@@ -183,6 +186,7 @@ if __name__ == "__main__":
         policy = load(pklfile)
 
     attacker = None
+    attack_name = "none"
     if args.eval_attack:
         env = gym.make(args.env)
         state_dim = env.observation_space.shape[0]
@@ -190,10 +194,12 @@ if __name__ == "__main__":
         attacker = Evaluation_Attacker(
             policy, None, args.eval_attack_eps, state_dim, action_dim, None, args.eval_attack_mode
         )
+        attack_name = f"{args.eval_attack_mode}_{args.eval_attack_eps}"
 
     data = rollout(policy, args.env, max_path=args.max_path, num_data=args.num_data, random=args.random, attacker=attacker)
 
-    output_file = os.path.join(args.output_file, f"{env_name}_{args.seed}_{args.num_data}_collect.hdf5")
+    os.makedirs(args.output_file, exist_ok=True)
+    output_file = os.path.join(args.output_file, f"{env_name}_{args.seed}_{args.num_data}_{attack_name}_collect.hdf5")
     hfile = h5py.File(output_file, 'w')
     for k in data:
         hfile.create_dataset(k, data=data[k], compression='gzip')
@@ -202,7 +208,7 @@ if __name__ == "__main__":
         pass
     else:
         hfile['metadata/algorithm'] = np.string_('SAC')
-        hfile['metadata/iteration'] = np.array([get_pkl_itr(args.pklfile)], dtype=np.int32)[0]
+        hfile['metadata/iteration'] = np.string_(get_pkl_itr(args.pklfile))
         hfile['metadata/policy/nonlinearity'] = np.string_('relu')
         hfile['metadata/policy/output_distribution'] = np.string_('tanh_gaussian')
         for k, v in get_policy_wts(policy).items():

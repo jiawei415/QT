@@ -77,16 +77,19 @@ def set_seed(seed):
     torch.backends.cudnn.deterministic = True
 
 def load_d4rl_trajectories(config, env_name: str, logger: Logger = None):
-    if config.sample_ratio < 1.0:
-        dataset_path = os.path.join(config.dataset_path, "original", f"{env_name}_ratio_{config.sample_ratio}.pt")
-        dataset = torch.load(dataset_path)
+    if config.use_collected:
+        dataset = gym.make(env_name).get_dataset(h5path=config.dataset_path)
     else:
-        h5path = (
-            config.dataset_path
-            if config.dataset_path is None
-            else os.path.expanduser(f"{config.dataset_path}/{env_name}.hdf5")
-        )
-        dataset = gym.make(env_name).get_dataset(h5path=h5path)
+        if config.sample_ratio < 1.0:
+            dataset_path = os.path.join(config.dataset_path, "original", f"{env_name}_ratio_{config.sample_ratio}.pt")
+            dataset = torch.load(dataset_path)
+        else:
+            h5path = (
+                config.dataset_path
+                if config.dataset_path is None
+                else os.path.expanduser(f"{config.dataset_path}/{env_name}.hdf5")
+            )
+            dataset = gym.make(env_name).get_dataset(h5path=h5path)
 
     attack_mask = np.ones_like(dataset["rewards"]) * -1
     if config.corruption_mode != "none":
@@ -246,7 +249,7 @@ def experiment(
     act_dim = env.action_space.shape[0]
 
     # load dataset
-    attack_config = {
+    data_config = {
         "env": gym_name,
         "device": device,
         'dataset_path': variant["dataset_path"],
@@ -260,12 +263,13 @@ def experiment(
         "corruption_rate": variant["corruption_rate"],
         "corruption_step": variant["corruption_step"],
         "sample_ratio": variant["sample_ratio"],
+        "use_collected": variant["use_collected"],
         "froce_attack": variant["froce_attack"],
         "use_original": variant["use_original"],
         "same_index": variant["same_index"],
     }
-    attack_config = dictToObj(attack_config)
-    trajectories, traj_info = load_d4rl_trajectories(attack_config, gym_name, logger=logger)
+    data_config = dictToObj(data_config)
+    trajectories, traj_info = load_d4rl_trajectories(data_config, gym_name, logger=logger)
     state_mean = traj_info['obs_mean']
     state_std = traj_info['obs_std']
 
@@ -521,7 +525,7 @@ if __name__ == '__main__':
     parser.add_argument('--alg_type', type=str, default='QT')
     parser.add_argument('--exp_name', type=str, default='QT')
     parser.add_argument('--seed', type=int, default=123)
-    parser.add_argument('--env', type=str, default='walker2d')
+    parser.add_argument('--env', type=str, default='hopper')
     parser.add_argument('--dataset', type=str, default='medium-replay')  # medium, medium-replay, medium-expert, expert
     parser.add_argument('--mode', type=str, default='normal')  # normal for standard setting, delayed for sparse
     parser.add_argument('--K', type=int, default=20)
@@ -573,6 +577,8 @@ if __name__ == '__main__':
     # dataset attack
     parser.add_argument('--dataset_path', type=str, default='/apdcephfs/share_1563664/ztjiaweixu/datasets')
     parser.add_argument("--down_sample", action='store_true', default=True)
+    parser.add_argument("--use_collected", action='store_true', default=False)
+    parser.add_argument("--data_suffix", type=str, default="3_20000_none_collect")
     parser.add_argument('--sample_ratio', default=1.0, type=float)
     parser.add_argument('--corruption_agent', default="IQL", type=str)
     parser.add_argument('--corruption_mode', default="none", type=str, choices=["none", "random", "adversarial"])
@@ -632,6 +638,10 @@ if __name__ == '__main__':
                 args.sample_ratio = 0.005
             if args.dataset == "cloned":
                 args.sample_ratio = 0.05
+
+    if args.use_collected:
+        dataset_name = f"{args.env}_{args.data_suffix}.hdf5"
+        args.dataset_path = os.path.join(args.dataset_path, "collected", dataset_name)
 
     if args.corruption_mode == "random" and args.corruption_rew > 0.0:
         args.corruption_rew *= 30.0
