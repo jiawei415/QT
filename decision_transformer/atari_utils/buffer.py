@@ -1,52 +1,62 @@
 import torch
 import numpy as np
-from dotmap import DotMap
 import d4rl_atari
+
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 class AtariBuffer:
-    def __init__(self, env, dataset_type, context_len, stack_frame=4, sample_type='traj_length', sample_ratio=1, seed=0) -> None:
+    def __init__(self, env, dataset_type, context_len, stack_frame=4, sample_type='traj_length', sample_ratio=1, seed=0, logger=None) -> None:
         self.dataset_type = dataset_type
         if dataset_type in ['medium', 'expert', 'mixed']:
             # when getting the dataset, we don't want to stack, and we will stack the frames ourselves.
-            self.dataset = DotMap(env.get_dataset())
+            self.dataset = env.get_dataset()
         else: 
             raise NotImplementedError
         self.rng = np.random.default_rng(seed)
-        self.dataset.terminals = self.dataset.terminals.astype(bool)
-        self.dataset.terminals[-1] = True
-        self.traj_sp = np.insert(np.where(self.dataset.terminals)[0][:-1]+1, 0, 0) # start is inclusive
-        self.traj_ep = np.where(self.dataset.terminals)[0] # end is also inclusive 
+        self.dataset["terminals"] = self.dataset["terminals"].astype(bool)
+        self.dataset["terminals"][-1] = True
+        self.traj_sp = np.insert(np.where(self.dataset["terminals"])[0][:-1]+1, 0, 0) # start is inclusive
+        self.traj_ep = np.where(self.dataset["terminals"])[0] # end is also inclusive
         self.traj_length = self.traj_ep - self.traj_sp + 1
         if self.traj_length[-1] < context_len: # pad to avoid index out of bound when fetching the last trajecectory, this is safe as we mask out padded steps.
             padding_length = context_len - self.traj_length[-1]
-            self.dataset.observations = np.concatenate((self.dataset.observations, np.zeros((padding_length, 1, 84, 84), dtype=self.dataset.observations.dtype)), axis=0)
-        self.traj_returns = np.add.reduceat(self.dataset.rewards, self.traj_sp)
+            self.dataset["observations"] = np.concatenate((self.dataset["observations"], np.zeros((padding_length, 1, 84, 84), dtype=self.dataset["observations"].dtype)), axis=0)
+        self.traj_returns = np.add.reduceat(self.dataset["rewards"], self.traj_sp)
         self.num_trajs = len(self.traj_sp)
-        self.rewards_to_go = np.cumsum(self.traj_returns)[np.insert(np.cumsum(self.dataset.terminals), 0, 0)[:-1]] - np.cumsum(self.dataset.rewards)
+        self.rewards_to_go = np.cumsum(self.traj_returns)[np.insert(np.cumsum(self.dataset["terminals"]), 0, 0)[:-1]] - np.cumsum(self.dataset["rewards"])
         self.p_sample = np.ones(self.num_trajs) / self.num_trajs if sample_type == 'uniform' else self.traj_returns / \
             self.traj_returns.sum() if sample_type == 'traj_return' else self.traj_length / self.traj_length.sum()
         self.context_len = context_len
         self.stack_frame = stack_frame
-        self.size = self.dataset.rewards.shape[0] - self.context_len * self.num_trajs
-        print(f"using dataset {dataset_type} with {self.num_trajs} trajectories ({self.dataset.rewards.shape[0]} transitions), average return: {np.mean(self.traj_returns)}, variance: {np.var(self.traj_returns)}")
+        self.size = self.dataset["rewards"].shape[0] - self.context_len * self.num_trajs
+        logger.info(f"using dataset {dataset_type} with {self.num_trajs} trajectories ({np.sum(self.traj_length)} transitions), average return: {np.mean(self.traj_returns)}, variance: {np.var(self.traj_returns)}")
         assert(sample_ratio > 0 and sample_ratio <= 1)
         if sample_ratio < 1:
             self.ratio_dataset(sample_ratio)
-        print(self.dataset.observations.shape)
-        self.dataset.observations = self.dataset.observations.squeeze(1)
+            logger.info(f"sample {sample_ratio} of dataset, {self.num_trajs} trajectories ({np.sum(self.traj_length)} transitions) after sampling, average return: {np.mean(self.traj_returns)}, variance: {np.var(self.traj_returns)}")
+        logger.info(self.dataset["observations"].shape)
+        self.dataset["observations"] = self.dataset["observations"].squeeze(1)
         self.rewards_to_go = np.expand_dims(self.rewards_to_go, axis=-1)
 
     def ratio_dataset(self, sample_ratio):
         sample_indices = self.rng.choice(self.num_trajs, size=int(np.floor(self.num_trajs*sample_ratio)), p=self.p_sample, replace=False)
         sample_indices.sort()
+        # reindex the dataset
         self.num_trajs = len(sample_indices)
         self.p_sample = self.p_sample[sample_indices]/np.sum(self.p_sample[sample_indices])
-        self.traj_sp = self.traj_sp[sample_indices]
-        self.traj_ep = self.traj_ep[sample_indices]
-        self.traj_length = self.traj_length[sample_indices]
-        print(f"sample {sample_ratio} of dataset, {len(sample_indices)} trajectories ({np.sum(self.traj_length)} transitions) after sampling, average return: {np.mean(self.traj_returns[sample_indices])}")
-        
+        traj_sp = self.traj_sp[sample_indices]
+        traj_ep = self.traj_ep[sample_indices]
+        self.dataset["observations"] = np.concatenate([self.dataset["observations"][traj_sp[i]:traj_ep[i]+1] for i in range(self.num_trajs)], axis=0)
+        self.dataset["actions"] = np.concatenate([self.dataset["actions"][traj_sp[i]:traj_ep[i]+1] for i in range(self.num_trajs)], axis=0)
+        self.dataset["rewards"] = np.concatenate([self.dataset["rewards"][traj_sp[i]:traj_ep[i]+1] for i in range(self.num_trajs)], axis=0)
+        self.dataset["terminals"] = np.concatenate([self.dataset["terminals"][traj_sp[i]:traj_ep[i]+1] for i in range(self.num_trajs)], axis=0)
+        self.traj_sp = np.insert(np.where(self.dataset["terminals"])[0][:-1]+1, 0, 0)
+        self.traj_ep = np.where(self.dataset["terminals"])[0]
+        self.traj_length = self.traj_ep - self.traj_sp + 1
+        self.traj_returns = np.add.reduceat(self.dataset["rewards"], self.traj_sp)
+        self.rewards_to_go = np.cumsum(self.traj_returns)[np.insert(np.cumsum(self.dataset["terminals"]), 0, 0)[:-1]] - np.cumsum(self.dataset["rewards"])
+        self.size = self.dataset["rewards"].shape[0] - self.context_len * self.num_trajs
+
     def sample(self, batch_size):
         selected_traj = self.rng.choice(np.arange(self.num_trajs), batch_size, replace=True, p=self.p_sample)
         selected_traj_sp = self.traj_sp[selected_traj]
@@ -64,21 +74,21 @@ class AtariBuffer:
             if offset >= self.stack_frame: # don't need padding
                 observation_list = []
                 for i in range(self.context_len):
-                    observation_list.append(torch.from_numpy(self.dataset.observations[sp+i-self.stack_frame+1:sp+i+1])) # stack_frame * 84 * 84
+                    observation_list.append(torch.from_numpy(self.dataset["observations"][sp+i-self.stack_frame+1:sp+i+1])) # stack_frame * 84 * 84
                 states_list.append(torch.stack(observation_list))
             else:
                 observation_list = []
                 for i in range(self.context_len):
                     if self.stack_frame - offset - i - 1 >= 0: # need padding
                         padding_length = self.stack_frame - offset - i - 1
-                        padding_tensor = torch.zeros((padding_length, self.dataset.observations.shape[1], self.dataset.observations.shape[2]), dtype=torch.float32) # .to(device)
-                        observation_list.append(torch.cat((padding_tensor, torch.from_numpy(self.dataset.observations[traj_sp:sp+i+1])), dim=0))
+                        padding_tensor = torch.zeros((padding_length, self.dataset["observations"].shape[1], self.dataset["observations"].shape[2]), dtype=torch.float32) # .to(device)
+                        observation_list.append(torch.cat((padding_tensor, torch.from_numpy(self.dataset["observations"][traj_sp:sp+i+1])), dim=0))
                     else:
-                        observation_list.append(torch.from_numpy(self.dataset.observations[sp+i-self.stack_frame+1:sp+i+1]))
+                        observation_list.append(torch.from_numpy(self.dataset["observations"][sp+i-self.stack_frame+1:sp+i+1]))
                 states_list.append(torch.stack(observation_list))
                 
         states = torch.stack(states_list).to(device)
-        actions = torch.from_numpy(self.dataset.actions[selected_index]).to(dtype=torch.int32, device=device)
+        actions = torch.from_numpy(self.dataset["actions"][selected_index]).to(dtype=torch.int32, device=device)
         rewards_to_go = torch.from_numpy(self.rewards_to_go[selected_index]).to(dtype=torch.float32, device=device)
         timesteps = torch.as_tensor(timesteps).to(dtype=torch.int32, device=device)
         return states, actions, rewards_to_go, timesteps, masks
