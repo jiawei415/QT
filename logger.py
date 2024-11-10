@@ -810,6 +810,8 @@ def get_gym_name(env_name, dataset):
             dversion = 1
     elif env_name == 'antmaze':
         dversion = 0
+    elif env_name in ['breakout', 'pong', 'seaquest', 'qbert']:
+        dversion = 0
     else:
         raise NotImplementedError
     gym_name = f'{env_name}-{dataset}-v{dversion}'
