@@ -159,7 +159,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--env', type=str, default="HalfCheetah-v2")
     parser.add_argument('--pklfile', type=str, default="/apdcephfs/share_1563664/ztjiaweixu/vdt_sz/2024110701")
-    parser.add_argument('--output_file', type=str, default='output_data')
+    parser.add_argument('--output_file', type=str, default='/apdcephfs/share_1563664/ztjiaweixu/datasets/collected')
     parser.add_argument('--max_path', type=int, default=1000)
     parser.add_argument('--num_data', type=int, default=20000)
     parser.add_argument('--random', action='store_true')
@@ -214,3 +214,4 @@ if __name__ == "__main__":
         for k, v in get_policy_wts(policy).items():
             hfile['metadata/policy/'+k] = v
     hfile.close()
+    print(f"Saved to {output_file}")

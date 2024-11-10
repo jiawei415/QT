@@ -28,7 +28,6 @@ class AtariBuffer:
             self.traj_returns.sum() if sample_type == 'traj_return' else self.traj_length / self.traj_length.sum()
         self.context_len = context_len
         self.stack_frame = stack_frame
-        self.size = self.dataset["rewards"].shape[0] - self.context_len * self.num_trajs
         logger.info(f"using dataset {dataset_type} with {self.num_trajs} trajectories ({np.sum(self.traj_length)} transitions), average return: {np.mean(self.traj_returns)}, variance: {np.var(self.traj_returns)}")
         assert(sample_ratio > 0 and sample_ratio <= 1)
         if sample_ratio < 1:
@@ -43,7 +42,9 @@ class AtariBuffer:
         sample_indices.sort()
         # reindex the dataset
         self.num_trajs = len(sample_indices)
-        self.p_sample = self.p_sample[sample_indices]/np.sum(self.p_sample[sample_indices])
+        self.p_sample = self.p_sample[sample_indices] / np.sum(self.p_sample[sample_indices])
+        # self.traj_sp = self.traj_sp[sample_indices]
+        # self.traj_ep = self.traj_ep[sample_indices]
         traj_sp = self.traj_sp[sample_indices]
         traj_ep = self.traj_ep[sample_indices]
         self.dataset["observations"] = np.concatenate([self.dataset["observations"][traj_sp[i]:traj_ep[i]+1] for i in range(self.num_trajs)], axis=0)
@@ -55,7 +56,6 @@ class AtariBuffer:
         self.traj_length = self.traj_ep - self.traj_sp + 1
         self.traj_returns = np.add.reduceat(self.dataset["rewards"], self.traj_sp)
         self.rewards_to_go = np.cumsum(self.traj_returns)[np.insert(np.cumsum(self.dataset["terminals"]), 0, 0)[:-1]] - np.cumsum(self.dataset["rewards"])
-        self.size = self.dataset["rewards"].shape[0] - self.context_len * self.num_trajs
 
     def sample(self, batch_size):
         selected_traj = self.rng.choice(np.arange(self.num_trajs), batch_size, replace=True, p=self.p_sample)

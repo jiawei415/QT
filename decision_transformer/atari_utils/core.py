@@ -141,7 +141,7 @@ def train(cfg, logger):
     for timestep in progress_bar:
         states, actions, rewards_to_go, timesteps, mask = buffer.sample(cfg.batch_size)
         # no need for attention mask for the model as we always pad on the right side, whose attention is ignored by the casual mask anyway
-        action_logits = model.forward(states, actions, rewards_to_go, timesteps)
+        action_logits = model(states, actions, rewards_to_go, timesteps)
         action_logits = action_logits[mask]
         action_loss = F.cross_entropy(action_logits, actions[mask].detach().to(dtype=torch.long))
         
