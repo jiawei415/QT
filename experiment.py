@@ -576,8 +576,8 @@ if __name__ == '__main__':
     
     # dataset attack
     parser.add_argument('--dataset_path', type=str, default='/apdcephfs/share_1563664/ztjiaweixu/datasets')
-    parser.add_argument("--down_sample", action='store_true', default=True)
-    parser.add_argument("--use_collected", action='store_true', default=False)
+    parser.add_argument("--down_sample", default=1, type=int, choices=[0, 1])
+    parser.add_argument("--use_collected", default=0, type=int, choices=[0, 1])
     parser.add_argument("--data_suffix", type=str, default="3_20000_none_collect")
     parser.add_argument('--sample_ratio', default=1.0, type=float)
     parser.add_argument('--corruption_agent', default="IQL", type=str)

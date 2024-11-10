@@ -15,7 +15,9 @@ corruption_rew=0.0
 corruption_rew2=0.0
 corruption_rate=0.3
 corruption_step=1
-
+data_suffix="0_20000_none_collect"
+down_sample=1
+use_collected=0
 
 seed=0
 
@@ -35,6 +37,9 @@ function run_experiment {
         --corruption_rew2 "$corruption_rew2" \
         --corruption_rate "$corruption_rate" \
         --corruption_step "$corruption_step" \
+        --data_suffix "$data_suffix" \
+        --down_sample "$down_sample" \
+        --use_collected "$use_collected" \
         --group "$group" --dataset_path "$dataset_path" --save_path "$logdir" \
         > ~/logs/"${env}_${seed}_$(date "+%Y%m%d%H%M%S").out" 2> ~/logs/"${env}_${seed}_$(date "+%Y%m%d%H%M%S").err" &
 }

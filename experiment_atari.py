@@ -19,6 +19,16 @@ if __name__ == '__main__':
     parser.add_argument('--stack_frame', type=int, default=4)
     parser.add_argument('--vec_envs', type=int, default=1, help='Vector environments')
     # algorithm parameters
+    parser.add_argument("--k_rewards", action='store_true', default=False)
+    parser.add_argument("--use_discount", action='store_true', default=False)
+    parser.add_argument("--rtg_no_q", action='store_true', default=False)
+    parser.add_argument("--infer_no_q", action='store_true', default=False)
+    parser.add_argument("--infer_normal", action='store_true', default=False)
+    parser.add_argument("--pred_s", action='store_true', default=False)
+    parser.add_argument("--pred_r", action='store_true', default=False)
+    parser.add_argument("--use_rtg", action='store_true', default=False)
+    parser.add_argument("--sigma", default=None, type=float)
+    parser.add_argument("--quantile", default=0.0, type=float)
     # model parameters
     parser.add_argument('--drop_p', type=float, default=0.1, help='Dropout probability')
     parser.add_argument('--context_len', type=int, default=30, help='Context length')
@@ -43,8 +53,8 @@ if __name__ == '__main__':
     parser.add_argument('--final_tokens', type=float, default=260e9, help='Number of final tokens')
     # dataset attack
     parser.add_argument('--dataset_path', type=str, default='/apdcephfs/share_1563664/ztjiaweixu/datasets')
-    parser.add_argument("--down_sample", action='store_true', default=True)
-    parser.add_argument("--use_collected", action='store_true', default=True)
+    parser.add_argument("--down_sample", default=1, type=int, choices=[0, 1])
+    parser.add_argument("--use_collected", default=0, type=int, choices=[0, 1])
     parser.add_argument("--data_suffix", type=str, default="3_20000_none_collect")
     parser.add_argument('--sample_ratio', default=0.1, type=float)
     parser.add_argument('--corruption_agent', default="IQL", type=str)
