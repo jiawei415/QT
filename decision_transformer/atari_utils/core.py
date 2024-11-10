@@ -99,8 +99,8 @@ def train(cfg, logger):
 
     logger.info("initializing buffer")
     buffer = AtariBuffer(
-        env=data_env, dataset_type=cfg.dataset, context_len=cfg.context_len,
-        stack_frame=cfg.stack_frame, sample_ratio=cfg.sample_ratio, seed=cfg.seed, logger=logger
+        env=data_env, dataset_type=cfg.dataset, context_len=cfg.context_len, max_timestep=cfg.max_timestep,
+        stack_frame=cfg.stack_frame, sample_ratio=cfg.sample_ratio, seed=cfg.seed, logger=logger,
     )
 
     logger.info("initializing model")

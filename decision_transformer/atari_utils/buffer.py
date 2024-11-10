@@ -5,7 +5,10 @@ import d4rl_atari
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 class AtariBuffer:
-    def __init__(self, env, dataset_type, context_len, stack_frame=4, sample_type='traj_length', sample_ratio=1, seed=0, logger=None) -> None:
+    def __init__(
+            self, env, dataset_type, context_len, max_timestep,
+            stack_frame=4, sample_type='traj_length', sample_ratio=1, seed=0, logger=None
+        ) -> None:
         self.dataset_type = dataset_type
         if dataset_type in ['medium', 'expert', 'mixed']:
             # when getting the dataset, we don't want to stack, and we will stack the frames ourselves.
@@ -26,6 +29,7 @@ class AtariBuffer:
         self.rewards_to_go = np.cumsum(self.traj_returns)[np.insert(np.cumsum(self.dataset["terminals"]), 0, 0)[:-1]] - np.cumsum(self.dataset["rewards"])
         self.p_sample = np.ones(self.num_trajs) / self.num_trajs if sample_type == 'uniform' else self.traj_returns / \
             self.traj_returns.sum() if sample_type == 'traj_return' else self.traj_length / self.traj_length.sum()
+        self.max_timestep = max_timestep
         self.context_len = context_len
         self.stack_frame = stack_frame
         logger.info(f"using dataset {dataset_type} with {self.num_trajs} trajectories ({np.sum(self.traj_length)} transitions), average return: {np.mean(self.traj_returns)}, variance: {np.var(self.traj_returns)}")
@@ -69,6 +73,7 @@ class AtariBuffer:
         masks = selected_index >= 0
         masks = torch.from_numpy(masks).to(dtype=torch.bool, device=device)
         timesteps = selected_offset[:, None] + np.arange(self.context_len)  # we don't care about the timestep for those padded steps
+        timesteps[np.where(timesteps >= self.max_timestep)] = self.max_timestep - 1
         states_list = []
         for traj_sp, sp, offset in zip(selected_traj_sp, selected_sp, selected_offset):
             if offset >= self.stack_frame: # don't need padding
